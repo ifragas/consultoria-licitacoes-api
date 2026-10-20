@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path'); // Importar módulo path
 const connectDB = require('./config/Database');
+const cors = require('cors'); // 1. Importar o pacote cors
 
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -14,6 +15,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(cors());
 
 // Servir a pasta de uploads de forma estática
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
