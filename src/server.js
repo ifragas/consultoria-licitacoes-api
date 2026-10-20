@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path'); // Importar módulo path
-const connectDB = require('./config/database');
+const connectDB = require('./config/Database');
 
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
