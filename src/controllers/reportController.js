@@ -38,23 +38,46 @@ const getExpiringDocuments = async (req, res) => {
 };
 
 // Resumo Geral do Dashboard
+// Resumo Geral do Dashboard (incluindo soma financeira)
 const getDashboardSummary = async (req, res) => {
   try {
     const today = new Date();
     const thirtyDaysFromNow = new Date();
     thirtyDaysFromNow.setDate(today.getDate() + 30);
 
-    // Consultas em paralelo na base de dados para maior velocidade
-    const [totalCompanies, totalPendingSchedules, expiringDocsCount] = await Promise.all([
+    // Consultas e agregações em paralelo
+    const [
+      totalCompanies,
+      totalPendingSchedules,
+      expiringDocsCount,
+      financialAggregation
+    ] = await Promise.all([
       Company.countDocuments(),
       Schedule.countDocuments({ status: { $in: ['Pendente', 'EmAndamento'] } }),
-      Document.countDocuments({ expirationDate: { $lte: thirtyDaysFromNow } })
+      Document.countDocuments({ expirationDate: { $lte: thirtyDaysFromNow } }),
+      // Agregação no MongoDB para somar o valor das licitações ativas
+      Schedule.aggregate([
+        { 
+          $match: { 
+            status: { $in: ['Pendente', 'EmAndamento'] } 
+          } 
+        },
+        { 
+          $group: { 
+            _id: null, 
+            totalAmount: { $sum: { $ifNull: ['$value', 0] } } // Altera '$value' para o nome do campo de valor na tua Model se for diferente (ex: '$estimatedValue')
+          } 
+        }
+      ])
     ]);
+
+    const totalFinancialValue = financialAggregation.length > 0 ? financialAggregation[0].totalAmount : 0;
 
     res.json({
       totalCompanies,
       totalPendingSchedules,
-      expiringDocsCount
+      expiringDocsCount,
+      totalFinancialValue // <-- Novo indicador financeiro retornado
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
