@@ -13,7 +13,7 @@ const DocumentSchema = new mongoose.Schema({
   },
   expirationDate: {
     type: Date,
-    required: [true, 'A data de validade é obrigatória.']
+    required: false // Alterado para false para permitir documentos sem validade
   },
   company: {
     type: mongoose.Schema.Types.ObjectId,
@@ -34,6 +34,7 @@ const DocumentSchema = new mongoose.Schema({
 
 // Virtual para verificar se o documento está vencido
 DocumentSchema.virtual('isExpired').get(function() {
+  if (!this.expirationDate) return false;
   return this.expirationDate < new Date();
 });
 
