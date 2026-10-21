@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getBids, createBid, updateBid, deleteBid } = require('../controllers/bidController');
-const authMiddleware = require('../middleware/authMiddleware'); // Ajusta conforme o middleware de autenticação que já usas
+const authMiddleware = require('../middlewares/authMiddleware'); // Ajusta conforme o middleware de autenticação que já usas
 
 // Todas as rotas protegidas por autenticação
 router.use(authMiddleware);
