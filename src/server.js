@@ -10,6 +10,7 @@ const companyRoutes = require('./routes/companyRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 const scheduleRoutes = require('./routes/scheduleRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const bidRoutes = require('./routes/bidRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -30,6 +31,7 @@ app.use('/companies', companyRoutes);
 app.use('/documents', documentRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/bids', bidRoutes);
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor a correr na porta ${PORT}`);
