@@ -22,7 +22,7 @@ const bidSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Em Análise', 'Aprovada', 'Rejeitada', 'Concluída'],
+    enum: ['Em Análise', 'Aprovada', 'Rejeitada', 'Vencida', 'Concluída'],
     default: 'Em Análise'
   },
   editalUrl: {
