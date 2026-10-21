@@ -8,8 +8,15 @@ const scheduleSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['Pregao', 'EntregaProposta', 'Impugnacao', 'RenovacaoDocumento', 'Reuniao', 'Outro'],
-    default: 'Pregao'
+    enum: [
+      'Abertura de Propostas',
+      'Disputa / Lances',
+      'Habilitação',
+      'Impugnação / Esclarecimento',
+      'Resultado / Homologação',
+      'Outro'
+    ],
+    default: 'Abertura de Propostas'
   },
   eventDate: {
     type: Date,
