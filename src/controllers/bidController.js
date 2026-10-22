@@ -1,5 +1,5 @@
 const Bid = require('../models/Bid');
-const Schedule = require('../models/Schedule'); // Alterado de Appointment para Schedule conforme o seu controller
+const Schedule = require('../models/Schedule');
 
 // Listar todas as licitações
 const getBids = async (req, res) => {
@@ -32,13 +32,18 @@ const createBid = async (req, res) => {
     // Se já for criada diretamente como 'Aprovada', gera o agendamento automaticamente
     if (savedBid.status === 'Aprovada') {
       try {
-        await Schedule.create({
-          title: `Disputa/Abertura: ${savedBid.title}`,
-          type: 'Licitação', // Tipo compatível com o seu ScheduleSchema
-          eventDate: savedBid.openingDate || new Date(),
-          companyId: savedBid.company, // O seu ScheduleController lê companyId
-          notes: `Órgão: ${savedBid.organ} - Valor Estimado: R$ ${savedBid.estimatedValue || 0}`
-        });
+        const existingSchedule = await Schedule.findOne({ bid: savedBid._id });
+
+        if (!existingSchedule) {
+          await Schedule.create({
+            title: `Disputa/Abertura: ${savedBid.title}`,
+            type: 'Licitação',
+            eventDate: savedBid.openingDate || new Date(),
+            companyId: savedBid.company,
+            bid: savedBid._id,
+            notes: `Órgão: ${savedBid.organ} - Valor Estimado: R$ ${savedBid.estimatedValue || 0}`
+          });
+        }
       } catch (schedErr) {
         console.error('Erro ao gerar agendamento automático na criação:', schedErr);
       }
@@ -66,16 +71,21 @@ const updateBid = async (req, res) => {
     // Automação: Se mudou para 'Aprovada' (e antes não estava aprovada)
     if (req.body.status === 'Aprovada' && existingBid.status !== 'Aprovada') {
       try {
-        // Como o Schedule não tem campo bid direto no controller original, podemos buscar pelo título ou notas se quiser evitar duplicados, ou criar diretamente
         const compId = updatedBid.company?._id || updatedBid.company;
         
-        await Schedule.create({
-          title: `Disputa/Abertura: ${updatedBid.title}`,
-          type: 'Licitação',
-          eventDate: updatedBid.openingDate || new Date(),
-          companyId: compId,
-          notes: `Órgão: ${updatedBid.organ} - Valor Estimado: R$ ${updatedBid.estimatedValue || 0}${updatedBid.editalUrl ? ` - Edital: ${updatedBid.editalUrl}` : ''}`
-        });
+        // Verifica se já existe um agendamento vinculado a esta licitação para evitar duplicados
+        const existingSchedule = await Schedule.findOne({ bid: updatedBid._id });
+
+        if (!existingSchedule) {
+          await Schedule.create({
+            title: `Disputa/Abertura: ${updatedBid.title}`,
+            type: 'Licitação',
+            eventDate: updatedBid.openingDate || new Date(),
+            companyId: compId,
+            bid: updatedBid._id,
+            notes: `Órgão: ${updatedBid.organ} - Valor Estimado: R$ ${updatedBid.estimatedValue || 0}${updatedBid.editalUrl ? ` - Edital: ${updatedBid.editalUrl}` : ''}`
+          });
+        }
       } catch (schedErr) {
         console.error('Erro ao gerar agendamento automático na atualização:', schedErr);
       }
