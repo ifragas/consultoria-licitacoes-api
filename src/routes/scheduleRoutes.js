@@ -3,6 +3,7 @@ const router = express.Router();
 const scheduleController = require('../controllers/scheduleController');
 const authMiddleware = require('../middlewares/authMiddleware');
 
+router.post('/test-email', scheduleController.testEmailSend);
 // Garante que o middleware é uma função, independentemente de como foi exportado
 const auth = typeof authMiddleware === 'function' ? authMiddleware : (authMiddleware.authMiddleware || authMiddleware.default);
 
@@ -23,5 +24,6 @@ router.get('/', scheduleController.getSchedules);
 router.get('/:id', scheduleController.getScheduleById);
 router.put('/:id', scheduleController.updateSchedule);
 router.delete('/:id', scheduleController.deleteSchedule);
+
 
 module.exports = router;
