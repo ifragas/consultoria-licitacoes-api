@@ -29,6 +29,7 @@ const createBid = async (req, res) => {
 
     const savedBid = await newBid.save();
 
+    // Se for criada diretamente como 'Aprovada', gera o agendamento automaticamente
     if (savedBid.status === 'Aprovada') {
       try {
         const existingSchedule = await Schedule.findOne({ bid: savedBid._id });
@@ -54,20 +55,18 @@ const createBid = async (req, res) => {
   }
 };
 
-// Atualizar licitação
+// Atualizar licitação (gera agendamento se for aprovada)
 const updateBid = async (req, res) => {
   try {
     const { id } = req.params;
-    const { removeSchedule, ...updateData } = req.body;
     
-    const previousBid = await Bid.findById(id);
-    if (!previousBid) {
+    const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { returnDocument: 'after', runValidators: true }).populate('company');
+    
+    if (!updatedBid) {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
     }
-
-    const updatedBid = await Bid.findByIdAndUpdate(id, updateData, { returnDocument: 'after', runValidators: true }).populate('company');
     
-    // Se foi aprovada agora, cria o agendamento se não existir
+    // Se o status for alterado para 'Aprovada', cria o agendamento caso ainda não exista
     if (updatedBid.status === 'Aprovada') {
       try {
         const compId = updatedBid.company?._id || updatedBid.company;
@@ -84,22 +83,11 @@ const updateBid = async (req, res) => {
               bid: updatedBid._id,
               notes: `Órgão: ${updatedBid.organ} - Valor Estimado: R$ ${updatedBid.estimatedValue || 0}${updatedBid.editalUrl ? ` - Edital: ${updatedBid.editalUrl}` : ''}`
             });
+            console.log('Agendamento automático gerado com sucesso para a licitação aprovada!');
           }
         }
       } catch (schedErr) {
         console.error('Erro ao gerar agendamento automático:', schedErr.message);
-      }
-    } 
-    
-    // Se estava Aprovada e mudou para outro status (ex: Em Análise) E o frontend confirmou a remoção
-    if (previousBid.status === 'Aprovada' && updatedBid.status !== 'Aprovada') {
-      if (removeSchedule === true) {
-        try {
-          const deleteResult = await Schedule.deleteMany({ bid: updatedBid._id });
-          console.log(`Agendamentos eliminados para a licitação: ${deleteResult.deletedCount}`);
-        } catch (schedErr) {
-          console.error('Erro ao eliminar agendamento vinculado:', schedErr.message);
-        }
       }
     }
     
@@ -109,7 +97,7 @@ const updateBid = async (req, res) => {
   }
 };
 
-// Eliminar licitação
+// Eliminar licitação (e excluir automaticamente o agendamento correspondente)
 const deleteBid = async (req, res) => {
   try {
     const { id } = req.params;
@@ -119,9 +107,11 @@ const deleteBid = async (req, res) => {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
     }
     
-    await Schedule.deleteMany({ bid: id });
+    // Exclui o agendamento vinculado a esta licitação de forma limpa e automática
+    const deleteResult = await Schedule.deleteMany({ bid: id });
+    console.log(`Licitação eliminada. Agendamentos removidos: ${deleteResult.deletedCount}`);
 
-    res.json({ message: 'Licitação eliminada com sucesso.' });
+    res.json({ message: 'Licitação e agendamento associado eliminados com sucesso.' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
