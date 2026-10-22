@@ -36,13 +36,12 @@ const createBid = async (req, res) => {
         if (!existingSchedule && savedBid.company) {
           await Schedule.create({
             title: `Disputa/Abertura: ${savedBid.title}`,
-            type: 'Abertura de Propostas', // Valor válido exato do enum do Schedule
+            type: 'Abertura de Propostas',
             eventDate: savedBid.openingDate || new Date(),
             company: savedBid.company,
             bid: savedBid._id,
             notes: `Órgão: ${savedBid.organ} - Valor Estimado: R$ ${savedBid.estimatedValue || 0}`
           });
-          console.log('Agendamento criado com sucesso na criação da licitação!');
         }
       } catch (schedErr) {
         console.error('Erro ao gerar agendamento automático na criação:', schedErr.message);
@@ -55,17 +54,20 @@ const createBid = async (req, res) => {
   }
 };
 
-// Atualizar licitação (incluindo alteração de status/aprovação)
+// Atualizar licitação (incluindo alteração de status/aprovação ou remoção de aprovação)
 const updateBid = async (req, res) => {
   try {
     const { id } = req.params;
     
-    const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { returnDocument: 'after', runValidators: true }).populate('company');
-    
-    if (!updatedBid) {
+    // Busca o registo anterior para comparar o status
+    const previousBid = await Bid.findById(id);
+    if (!previousBid) {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
     }
+
+    const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { returnDocument: 'after', runValidators: true }).populate('company');
     
+    // CASO 1: Mudou para 'Aprovada' (Cria o agendamento se não existir)
     if (updatedBid.status === 'Aprovada') {
       try {
         const compId = updatedBid.company?._id || updatedBid.company;
@@ -76,21 +78,29 @@ const updateBid = async (req, res) => {
           if (!existingSchedule) {
             await Schedule.create({
               title: `Disputa/Abertura: ${updatedBid.title}`,
-              type: 'Abertura de Propostas', // Valor válido exato do enum do Schedule
+              type: 'Abertura de Propostas',
               eventDate: updatedBid.openingDate || new Date(),
               company: compId,
               bid: updatedBid._id,
               notes: `Órgão: ${updatedBid.organ} - Valor Estimado: R$ ${updatedBid.estimatedValue || 0}${updatedBid.editalUrl ? ` - Edital: ${updatedBid.editalUrl}` : ''}`
             });
-            console.log('Agendamento automático gerado com sucesso para a licitação aprovada!');
-          } else {
-            console.log('Agendamento para esta licitação já existia.');
+            console.log('Agendamento automático gerado com sucesso!');
           }
-        } else {
-          console.log('Aviso: A licitação aprovada não tem uma empresa associada, o agendamento não foi gerado.');
         }
       } catch (schedErr) {
-        console.error('Erro detalhado ao gerar agendamento automático na atualização:', schedErr.message);
+        console.error('Erro ao gerar agendamento automático:', schedErr.message);
+      }
+    } 
+    
+    // CASO 2: Estava Aprovada e deixou de estar (O frontend envia o sinal para remover ou ignorar)
+    if (previousBid.status === 'Aprovada' && updatedBid.status !== 'Aprovada') {
+      if (req.body.removeSchedule === true) {
+        try {
+          await Schedule.deleteMany({ bid: updatedBid._id });
+          console.log('Agendamento vinculado eliminado com sucesso!');
+        } catch (schedErr) {
+          console.error('Erro ao eliminar agendamento vinculado:', schedErr.message);
+        }
       }
     }
     
