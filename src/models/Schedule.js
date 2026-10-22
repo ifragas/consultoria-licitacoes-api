@@ -43,7 +43,11 @@ const scheduleSchema = new mongoose.Schema({
   notes: {
     type: String,
     trim: true
-  }
+  },
+  bid: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Bid'
+  },
 }, {
   timestamps: true
 });

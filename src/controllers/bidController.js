@@ -29,7 +29,6 @@ const createBid = async (req, res) => {
 
     const savedBid = await newBid.save();
 
-    // Se for criada diretamente como 'Aprovada', gera o agendamento automaticamente
     if (savedBid.status === 'Aprovada') {
       try {
         const existingSchedule = await Schedule.findOne({ bid: savedBid._id });
@@ -55,7 +54,7 @@ const createBid = async (req, res) => {
   }
 };
 
-// Atualizar licitação (gera agendamento se for aprovada)
+// Atualizar licitação
 const updateBid = async (req, res) => {
   try {
     const { id } = req.params;
@@ -66,7 +65,6 @@ const updateBid = async (req, res) => {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
     }
     
-    // Se o status for alterado para 'Aprovada', cria o agendamento caso ainda não exista
     if (updatedBid.status === 'Aprovada') {
       try {
         const compId = updatedBid.company?._id || updatedBid.company;
@@ -97,7 +95,7 @@ const updateBid = async (req, res) => {
   }
 };
 
-// Eliminar licitação (e excluir automaticamente o agendamento correspondente)
+// Eliminar licitação (e excluir o agendamento correspondente)
 const deleteBid = async (req, res) => {
   try {
     const { id } = req.params;
@@ -107,8 +105,14 @@ const deleteBid = async (req, res) => {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
     }
     
-    // Exclui o agendamento vinculado a esta licitação de forma limpa e automática
-    const deleteResult = await Schedule.deleteMany({ bid: id });
+    // Tenta apagar procurando pelo campo bid ou caso o ID esteja guardado nas notas
+    const deleteResult = await Schedule.deleteMany({ 
+      $or: [
+        { bid: id },
+        { notes: { $regex: id,$options: 'i' } }
+      ]
+    });
+    
     console.log(`Licitação eliminada. Agendamentos removidos: ${deleteResult.deletedCount}`);
 
     res.json({ message: 'Licitação e agendamento associado eliminados com sucesso.' });
