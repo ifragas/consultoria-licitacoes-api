@@ -54,12 +54,11 @@ const createBid = async (req, res) => {
   }
 };
 
-// Atualizar licitação (incluindo alteração de status/aprovação ou remoção de aprovação)
+// Atualizar licitação
 const updateBid = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Busca o registo anterior para comparar o status
     const previousBid = await Bid.findById(id);
     if (!previousBid) {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
@@ -67,7 +66,7 @@ const updateBid = async (req, res) => {
 
     const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { returnDocument: 'after', runValidators: true }).populate('company');
     
-    // CASO 1: Mudou para 'Aprovada' (Cria o agendamento se não existir)
+    // Se foi aprovada, cria o agendamento se não existir
     if (updatedBid.status === 'Aprovada') {
       try {
         const compId = updatedBid.company?._id || updatedBid.company;
@@ -84,7 +83,6 @@ const updateBid = async (req, res) => {
               bid: updatedBid._id,
               notes: `Órgão: ${updatedBid.organ} - Valor Estimado: R$ ${updatedBid.estimatedValue || 0}${updatedBid.editalUrl ? ` - Edital: ${updatedBid.editalUrl}` : ''}`
             });
-            console.log('Agendamento automático gerado com sucesso!');
           }
         }
       } catch (schedErr) {
@@ -92,12 +90,11 @@ const updateBid = async (req, res) => {
       }
     } 
     
-    // CASO 2: Estava Aprovada e deixou de estar (O frontend envia o sinal para remover ou ignorar)
+    // Se estava aprovada e mudou para outro estado com o sinal de remoção
     if (previousBid.status === 'Aprovada' && updatedBid.status !== 'Aprovada') {
       if (req.body.removeSchedule === true) {
         try {
           await Schedule.deleteMany({ bid: updatedBid._id });
-          console.log('Agendamento vinculado eliminado com sucesso!');
         } catch (schedErr) {
           console.error('Erro ao eliminar agendamento vinculado:', schedErr.message);
         }
