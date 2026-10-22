@@ -58,15 +58,16 @@ const createBid = async (req, res) => {
 const updateBid = async (req, res) => {
   try {
     const { id } = req.params;
+    const { removeSchedule, ...updateData } = req.body;
     
     const previousBid = await Bid.findById(id);
     if (!previousBid) {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
     }
 
-    const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { returnDocument: 'after', runValidators: true }).populate('company');
+    const updatedBid = await Bid.findByIdAndUpdate(id, updateData, { returnDocument: 'after', runValidators: true }).populate('company');
     
-    // Se foi aprovada, cria o agendamento se não existir
+    // Se foi aprovada agora, cria o agendamento se não existir
     if (updatedBid.status === 'Aprovada') {
       try {
         const compId = updatedBid.company?._id || updatedBid.company;
@@ -90,11 +91,12 @@ const updateBid = async (req, res) => {
       }
     } 
     
-    // Se estava aprovada e mudou para outro estado com o sinal de remoção
+    // Se estava Aprovada e mudou para outro status (ex: Em Análise) E o frontend confirmou a remoção
     if (previousBid.status === 'Aprovada' && updatedBid.status !== 'Aprovada') {
-      if (req.body.removeSchedule === true) {
+      if (removeSchedule === true) {
         try {
-          await Schedule.deleteMany({ bid: updatedBid._id });
+          const deleteResult = await Schedule.deleteMany({ bid: updatedBid._id });
+          console.log(`Agendamentos eliminados para a licitação: ${deleteResult.deletedCount}`);
         } catch (schedErr) {
           console.error('Erro ao eliminar agendamento vinculado:', schedErr.message);
         }
