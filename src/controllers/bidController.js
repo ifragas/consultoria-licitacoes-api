@@ -1,4 +1,5 @@
 const Bid = require('../models/Bid');
+const Schedule = require('../models/Schedule'); // Alterado de Appointment para Schedule conforme o seu controller
 
 // Listar todas as licitações
 const getBids = async (req, res) => {
@@ -27,6 +28,22 @@ const createBid = async (req, res) => {
     });
 
     const savedBid = await newBid.save();
+
+    // Se já for criada diretamente como 'Aprovada', gera o agendamento automaticamente
+    if (savedBid.status === 'Aprovada') {
+      try {
+        await Schedule.create({
+          title: `Disputa/Abertura: ${savedBid.title}`,
+          type: 'Licitação', // Tipo compatível com o seu ScheduleSchema
+          eventDate: savedBid.openingDate || new Date(),
+          companyId: savedBid.company, // O seu ScheduleController lê companyId
+          notes: `Órgão: ${savedBid.organ} - Valor Estimado: R$ ${savedBid.estimatedValue || 0}`
+        });
+      } catch (schedErr) {
+        console.error('Erro ao gerar agendamento automático na criação:', schedErr);
+      }
+    }
+
     res.status(201).json(savedBid);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -37,10 +54,31 @@ const createBid = async (req, res) => {
 const updateBid = async (req, res) => {
   try {
     const { id } = req.params;
-    const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { new: true, runValidators: true });
     
-    if (!updatedBid) {
+    // Busca a licitação atual antes de atualizar para comparar o status anterior
+    const existingBid = await Bid.findById(id);
+    if (!existingBid) {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
+    }
+
+    const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { new: true, runValidators: true }).populate('company');
+    
+    // Automação: Se mudou para 'Aprovada' (e antes não estava aprovada)
+    if (req.body.status === 'Aprovada' && existingBid.status !== 'Aprovada') {
+      try {
+        // Como o Schedule não tem campo bid direto no controller original, podemos buscar pelo título ou notas se quiser evitar duplicados, ou criar diretamente
+        const compId = updatedBid.company?._id || updatedBid.company;
+        
+        await Schedule.create({
+          title: `Disputa/Abertura: ${updatedBid.title}`,
+          type: 'Licitação',
+          eventDate: updatedBid.openingDate || new Date(),
+          companyId: compId,
+          notes: `Órgão: ${updatedBid.organ} - Valor Estimado: R$ ${updatedBid.estimatedValue || 0}${updatedBid.editalUrl ? ` - Edital: ${updatedBid.editalUrl}` : ''}`
+        });
+      } catch (schedErr) {
+        console.error('Erro ao gerar agendamento automático na atualização:', schedErr);
+      }
     }
     
     res.json(updatedBid);
