@@ -101,27 +101,18 @@ const deleteSchedule = async (req, res) => {
   }
 };
 
-// Testar envio de e-mail manualmente (Ambiente de Teste)
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const testEmailSend = async (req, res) => {
   try {
-    const { email } = req.body;
-    
-    const transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-      port: process.env.EMAIL_PORT || 587,
-      secure: false,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-      }
-    });
+    const { email } = res.req ? req.body : req;
+    const targetEmail = email || 'ianfraga92@gmail.com';
 
-    await transporter.sendMail({
-      from: `"Gestorae Notificações" <${process.env.EMAIL_USER}>`,
-      to: email || process.env.EMAIL_USER,
-      subject: "[Gestorae] Teste de Envio de E-mail 🚀",
+    const data = await resend.emails.send({
+      from: 'Gestorae <onboarding@resend.dev>',
+      to: [targetEmail],
+      subject: '[Gestorae] Teste de Envio de E-mail via Resend 🚀',
       html: `
         <div style="font-family: Arial, sans-serif; color: #333333; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">
           <div style="margin-bottom: 20px; text-align: center;">
@@ -130,13 +121,9 @@ const testEmailSend = async (req, res) => {
           </div>
 
           <div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
-            <h2 style="color: #15803d; font-size: 18px; margin: 0 0 8px 0;">Teste realizado com sucesso! 🎉</h2>
-            <p style="margin: 0; color: #166534; font-size: 14px;">Se estás a receber este e-mail, significa que o serviço de disparos e alertas do <strong>Gestorae</strong> está perfeitamente configurado e pronto para operar.</p>
+            <h2 style="color: #15803d; font-size: 18px; margin: 0 0 8px 0;">Teste via Resend bem-sucedido! 🎉</h2>
+            <p style="margin: 0; color: #166534; font-size: 14px;">A integração HTTP com o Resend no Render está a funcionar perfeitamente.</p>
           </div>
-
-          <p style="font-size: 14px; color: #475569;">
-            Os e-mails de lembrete diários serão disparados automaticamente às <strong>08:05 da manhã</strong> para os eventos com 24 horas de antecedência.
-          </p>
 
           <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px 0;" />
 
@@ -147,9 +134,9 @@ const testEmailSend = async (req, res) => {
       `
     });
 
-    res.json({ message: 'E-mail de teste da Gestorae disparado com sucesso!' });
+    res.json({ message: 'E-mail de teste da Gestorae disparado com sucesso via Resend!', data });
   } catch (error) {
-    console.error('Erro ao enviar e-mail de teste:', error);
+    console.error('Erro ao enviar e-mail de teste via Resend:', error);
     res.status(500).json({ error: error.message });
   }
 };

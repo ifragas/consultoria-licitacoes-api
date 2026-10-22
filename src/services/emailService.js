@@ -1,24 +1,15 @@
 const cron = require('node-cron');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const Schedule = require('../models/Schedule');
 
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-  port: process.env.EMAIL_PORT || 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Executa diariamente às 08:05 da manhã
 cron.schedule('5 8 * * *', async () => {
   try {
-    console.log('A verificar agendamentos para disparo de lembretes às 08:05...');
+    console.log('A verificar agendamentos para disparo de lembretes (Gestorae) às 08:05...');
 
     const now = new Date();
-    // Busca os eventos do dia seguinte (amanhã)
     const tomorrowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
     const tomorrowEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
 
@@ -36,8 +27,8 @@ cron.schedule('5 8 * * *', async () => {
         timeStyle: 'short'
       });
 
-      const mailOptions = {
-        from: `"Gestorae Notificações" <${process.env.EMAIL_USER}>`,
+      await resend.emails.send({
+        from: 'Gestorae <onboarding@resend.dev>', // No plano gratuito do Resend, usa-se este remetente padrão
         to: schedule.notificationEmail,
         subject: `[Gestorae] Lembrete: O evento "${schedule.title}" ocorre amanhã!`,
         html: `
@@ -91,17 +82,14 @@ cron.schedule('5 8 * * *', async () => {
             </div>
           </div>
         `
-      };
+      });
 
-      await transporter.sendMail(mailOptions);
-
-      // Marca o e-mail como enviado para evitar disparos duplicados
       schedule.emailSent = true;
       await schedule.save();
 
-      console.log(`Lembrete Gestorae enviado com sucesso para: ${schedule.notificationEmail}`);
+      console.log(`Lembrete Gestorae enviado via Resend para: ${schedule.notificationEmail}`);
     }
   } catch (error) {
-    console.error('Erro ao processar o envio de e-mails agendados:', error);
+    console.error('Erro ao processar o envio de e-mails agendados com Resend:', error);
   }
 });
