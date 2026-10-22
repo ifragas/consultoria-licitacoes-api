@@ -29,7 +29,6 @@ const createBid = async (req, res) => {
 
     const savedBid = await newBid.save();
 
-    // Se já for criada diretamente como 'Aprovada', gera o agendamento automaticamente
     if (savedBid.status === 'Aprovada') {
       try {
         const existingSchedule = await Schedule.findOne({ bid: savedBid._id });
@@ -37,7 +36,7 @@ const createBid = async (req, res) => {
         if (!existingSchedule && savedBid.company) {
           await Schedule.create({
             title: `Disputa/Abertura: ${savedBid.title}`,
-            type: 'Licitação',
+            type: 'Abertura de Propostas', // Valor válido exato do enum do Schedule
             eventDate: savedBid.openingDate || new Date(),
             company: savedBid.company,
             bid: savedBid._id,
@@ -61,26 +60,23 @@ const updateBid = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Atualiza a licitação e já retorna o documento atualizado com a empresa populada
-    const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { new: true, runValidators: true }).populate('company');
+    const updatedBid = await Bid.findByIdAndUpdate(id, req.body, { returnDocument: 'after', runValidators: true }).populate('company');
     
     if (!updatedBid) {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
     }
     
-    // Automação: Se o status atualizado for 'Aprovada'
     if (updatedBid.status === 'Aprovada') {
       try {
         const compId = updatedBid.company?._id || updatedBid.company;
         
         if (compId) {
-          // Verifica se já existe um agendamento vinculado a esta licitação
           const existingSchedule = await Schedule.findOne({ bid: updatedBid._id });
 
           if (!existingSchedule) {
             await Schedule.create({
               title: `Disputa/Abertura: ${updatedBid.title}`,
-              type: 'Licitação',
+              type: 'Abertura de Propostas', // Valor válido exato do enum do Schedule
               eventDate: updatedBid.openingDate || new Date(),
               company: compId,
               bid: updatedBid._id,
@@ -114,7 +110,6 @@ const deleteBid = async (req, res) => {
       return res.status(404).json({ error: 'Licitação não encontrada.' });
     }
     
-    // Remove também o agendamento associado se a licitação for eliminada
     await Schedule.deleteMany({ bid: id });
 
     res.json({ message: 'Licitação eliminada com sucesso.' });
