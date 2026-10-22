@@ -1,4 +1,5 @@
 require('dotenv').config();
+require('./services/emailService');
 const express = require('express');
 const path = require('path'); // Importar módulo path
 const connectDB = require('./config/Database');
@@ -11,6 +12,7 @@ const documentRoutes = require('./routes/documentRoutes');
 const scheduleRoutes = require('./routes/scheduleRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const bidRoutes = require('./routes/bidRoutes');
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;

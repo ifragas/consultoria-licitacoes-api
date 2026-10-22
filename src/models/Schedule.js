@@ -44,10 +44,19 @@ const scheduleSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  notificationEmail: {
+    type: String,
+    trim: true,
+    lowercase: true
+  },
+  emailSent: {
+    type: Boolean,
+    default: false
+  },
   bid: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Bid'
-  },
+  }
 }, {
   timestamps: true
 });

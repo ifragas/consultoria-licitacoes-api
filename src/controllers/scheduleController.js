@@ -1,17 +1,15 @@
 const Schedule = require('../models/Schedule');
 const Company = require('../models/Company');
 
-// Criar um novo agendamento/prazo
 const createSchedule = async (req, res) => {
   try {
-    const { title, type, eventDate, companyId, assignedTo, locationOrUrl, notes } = req.body;
+    const { title, type, eventDate, companyId, assignedTo, locationOrUrl, notes, notificationEmail, bidId } = req.body;
 
     const company = await Company.findById(companyId);
     if (!company) {
       return res.status(404).json({ error: 'Empresa não encontrada.' });
     }
 
-    // Identifica o ID do utilizador com segurança (verifica req.user.id, req.user._id ou req.user)
     const userId = req.user?.id || req.user?._id || req.user;
 
     const schedule = new Schedule({
@@ -21,7 +19,9 @@ const createSchedule = async (req, res) => {
       company: companyId,
       assignedTo: assignedTo || userId, 
       locationOrUrl,
-      notes
+      notes,
+      notificationEmail,
+      bid: bidId || null
     });
 
     await schedule.save();
@@ -31,7 +31,6 @@ const createSchedule = async (req, res) => {
   }
 };
 
-// Listar agendamentos com filtros (por semana, mês ou empresa)
 const getSchedules = async (req, res) => {
   try {
     const { companyId, startDate, endDate, status } = req.query;
@@ -57,7 +56,6 @@ const getSchedules = async (req, res) => {
   }
 };
 
-// Obter um agendamento específico por ID
 const getScheduleById = async (req, res) => {
   try {
     const schedule = await Schedule.findById(req.params.id)
@@ -73,7 +71,6 @@ const getScheduleById = async (req, res) => {
   }
 };
 
-// Atualizar status ou detalhes do agendamento
 const updateSchedule = async (req, res) => {
   try {
     const schedule = await Schedule.findByIdAndUpdate(
@@ -92,7 +89,6 @@ const updateSchedule = async (req, res) => {
   }
 };
 
-// Eliminar agendamento
 const deleteSchedule = async (req, res) => {
   try {
     const schedule = await Schedule.findByIdAndDelete(req.params.id);
@@ -105,7 +101,6 @@ const deleteSchedule = async (req, res) => {
   }
 };
 
-// Garante que todas as funções usadas nas rotas são exportadas aqui!
 module.exports = {
   createSchedule,
   getSchedules,
