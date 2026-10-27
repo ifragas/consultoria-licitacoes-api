@@ -5,412 +5,537 @@ const PNCP_URL =
   'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 
 const TAMANHO_PAGINA = 50;
-const TAMANHO_LOTE = 5;
-const TIMEOUT_REQUISICAO = 45000;
+const TEMPO_CACHE_MS = 15 * 60 * 1000;
+const INTERVALO_REQUISICOES_MS = 500;
+const MAX_TENTATIVAS = 4;
 
-// Normaliza textos para permitir buscas sem diferenciar
-// maiúsculas, minúsculas ou acentos.
-const normalizarTexto = (texto) => {
-  if (!texto) return '';
+// Cache temporário das páginas consultadas no PNCP.
+const cachePaginas = new Map();
 
-  return String(texto)
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
-};
+// Evita repetir imediatamente pesquisas completas idênticas.
+const cachePesquisas = new Map();
 
-// Usa a data local, evitando diferenças de dia causadas pelo UTC.
-const formatarData = (data) => {
+// Fila global: somente uma requisição ao PNCP por vez.
+let filaPncp = Promise.resolve();
+
+const aguardar = (ms) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+function executarNaFila(funcao) {
+  const tarefa = filaPncp.then(funcao, funcao);
+
+  filaPncp = tarefa.then(
+    () => undefined,
+    () => undefined
+  );
+
+  return tarefa;
+}
+
+function limparCachesExpirados() {
+  const agora = Date.now();
+
+  for (const [chave, item] of cachePaginas.entries()) {
+    if (agora - item.timestamp > TEMPO_CACHE_MS) {
+      cachePaginas.delete(chave);
+    }
+  }
+
+  for (const [chave, item] of cachePesquisas.entries()) {
+    if (agora - item.timestamp > TEMPO_CACHE_MS) {
+      cachePesquisas.delete(chave);
+    }
+  }
+}
+
+function formatarData(data) {
+  if (!data) return '';
+
+  const valor = String(data).trim();
+
+  // Aceita YYYY-MM-DD ou YYYYMMDD.
+  if (/^\d{8}$/.test(valor)) {
+    return valor;
+  }
+
+  const correspondencia = valor.match(
+    /^(\d{4})-(\d{2})-(\d{2})$/
+  );
+
+  if (correspondencia) {
+    return `${correspondencia[1]}${correspondencia[2]}${correspondencia[3]}`;
+  }
+
+  return '';
+}
+
+function dataLocalISO(data = new Date()) {
   const ano = data.getFullYear();
   const mes = String(data.getMonth() + 1).padStart(2, '0');
   const dia = String(data.getDate()).padStart(2, '0');
 
-  return `${ano}${mes}${dia}`;
-};
+  return `${ano}-${mes}-${dia}`;
+}
 
-// Separa os termos por vírgulas, preservando frases entre aspas.
-// Exemplo: areia, brita, "pavimentação asfáltica".
-const extrairTermosDeBusca = (termoGeral) => {
-  if (!termoGeral || !String(termoGeral).trim()) {
-    return [];
+function normalizarTexto(valor) {
+  return String(valor ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extrairTermosDeBusca(entrada) {
+  if (Array.isArray(entrada)) {
+    return entrada
+      .map((item) => String(item).trim())
+      .filter(Boolean);
   }
 
+  const texto = String(entrada ?? '').trim();
+
+  if (!texto) return [];
+
+  // Aceita termos separados por vírgula e expressões entre aspas.
   const termos = [];
-  const regex = /"([^"]+)"|([^,]+)/g;
-  let match;
+  const expressao = /"([^"]+)"|([^,]+)/g;
+  let resultado;
 
-  while ((match = regex.exec(String(termoGeral))) !== null) {
-    const termo = (match[1] || match[2] || '').trim();
+  while ((resultado = expressao.exec(texto)) !== null) {
+    const termo = (resultado[1] ?? resultado[2] ?? '')
+      .trim()
+      .replace(/^["']|["']$/g, '')
+      .trim();
 
-    if (termo) {
-      termos.push(termo);
-    }
+    if (termo) termos.push(termo);
   }
 
-  return termos;
-};
+  return [...new Set(termos)];
+}
 
-// Pesquisa modalidade específica ou todas as modalidades.
-// Valores como "", "todas", "todos", "all" e "0"
-// são tratados como ausência de filtro.
-const normalizarModalidade = (modalidade) => {
+function normalizarModalidade(valor) {
+  if (valor === undefined || valor === null) {
+    return null;
+  }
+
+  const texto = String(valor).trim().toLowerCase();
+
   if (
-    modalidade === undefined ||
-    modalidade === null ||
-    String(modalidade).trim() === ''
+    !texto ||
+    ['todas', 'todos', 'all', 'qualquer', '0'].includes(texto)
   ) {
     return null;
   }
 
-  const valor = String(modalidade).trim();
-  const valorNormalizado = normalizarTexto(valor);
+  const numero = Number(texto);
 
-  if (
-    ['todas', 'todos', 'all', 'qualquer', '0'].includes(
-      valorNormalizado
-    )
-  ) {
-    return null;
-  }
+  return Number.isInteger(numero) && numero > 0
+    ? numero
+    : null;
+}
 
-  const codigo = Number(valor);
+function chavePagina({
+  dataInicial,
+  dataFinal,
+  uf,
+  modalidade,
+  pagina,
+}) {
+  return [
+    dataInicial,
+    dataFinal,
+    uf || '',
+    modalidade ?? 'todas',
+    pagina,
+  ].join('|');
+}
 
-  if (!Number.isInteger(codigo) || codigo < 1) {
-    throw new Error(
-      `Código de modalidade inválido: ${valor}`
-    );
-  }
-
-  return codigo;
-};
-
-// Trata o curinga % como separador de partes obrigatórias.
-// Exemplo: transporte%alunos exige que ambos apareçam no texto.
-const correspondeTermo = (textoCompleto, termoOriginal) => {
-  const partes = String(termoOriginal)
-    .split('%')
-    .map(normalizarTexto)
-    .filter(Boolean);
-
-  if (partes.length > 1) {
-    return partes.every((parte) =>
-      textoCompleto.includes(parte)
-    );
-  }
-
-  const termo = normalizarTexto(termoOriginal);
-
-  return termo !== '' && textoCompleto.includes(termo);
-};
-
-// Basta um dos termos cadastrados corresponder ao objeto
-// da contratação ou ao nome do órgão.
-const filtrarPorTermos = (licitacoes, termos) => {
-  if (!termos.length) {
-    return licitacoes;
-  }
-
-  return licitacoes.filter((item) => {
-    const objeto = normalizarTexto(item.objetoCompra);
-    const orgao = normalizarTexto(
-      item.orgaoEntidade?.razaoSocial
-    );
-
-    const textoCompleto = `${objeto} ${orgao}`;
-
-    return termos.some((termo) =>
-      correspondeTermo(textoCompleto, termo)
-    );
-  });
-};
-
-// Executa uma requisição ao PNCP.
-const buscarPaginaPncp = async (params) => {
-  const response = await axios.get(PNCP_URL, {
-    params,
-    timeout: TIMEOUT_REQUISICAO,
-    headers: {
-      'User-Agent': 'Mozilla/5.0',
-      Accept: '*/*',
-    },
-  });
-
-  return response.data;
-};
-
-// Consulta todas as páginas do PNCP em lotes.
-// Usado quando existe uma lista de termos para pesquisar.
-const buscarTodasAsPaginas = async (
-  paramsBase,
-  primeiraResposta
-) => {
-  const totalPaginas = Math.max(
-    1,
-    Number(primeiraResposta.totalPaginas) || 1
+function obterTotalPaginas(resposta) {
+  const total = Number(
+    resposta?.totalPaginas ??
+    resposta?.totalPaginasEncontradas ??
+    1
   );
 
-  const todosOsRegistros = Array.isArray(
-    primeiraResposta.data
-  )
-    ? [...primeiraResposta.data]
-    : [];
+  return Number.isFinite(total) && total >= 1
+    ? Math.floor(total)
+    : 1;
+}
 
-  for (
-    let inicio = 2;
-    inicio <= totalPaginas;
-    inicio += TAMANHO_LOTE
-  ) {
-    const fim = Math.min(
-      inicio + TAMANHO_LOTE - 1,
-      totalPaginas
-    );
+async function requisitarPaginaPncp(params) {
+  const chave = chavePagina(params);
+  limparCachesExpirados();
 
-    const paginas = [];
+  const itemCache = cachePaginas.get(chave);
 
-    for (let pagina = inicio; pagina <= fim; pagina++) {
-      paginas.push(pagina);
-    }
-
-    const respostas = await Promise.all(
-      paginas.map((pagina) =>
-        buscarPaginaPncp({
-          ...paramsBase,
-          pagina,
-        })
-      )
-    );
-
-    for (const resposta of respostas) {
-      if (Array.isArray(resposta.data)) {
-        todosOsRegistros.push(...resposta.data);
-      }
-    }
+  if (itemCache && Date.now() - itemCache.timestamp < TEMPO_CACHE_MS) {
+    return itemCache.dados;
   }
 
-  return todosOsRegistros;
-};
+  return executarNaFila(async () => {
+    // Outra consulta pode ter preenchido o cache enquanto aguardávamos.
+    const cacheAtual = cachePaginas.get(chave);
 
-// Remove duplicatas utilizando o identificador oficial,
-// preservando registros que não tenham esse identificador.
-const removerDuplicatas = (registros) => {
-  const identificadores = new Set();
+    if (
+      cacheAtual &&
+      Date.now() - cacheAtual.timestamp < TEMPO_CACHE_MS
+    ) {
+      return cacheAtual.dados;
+    }
 
-  return registros.filter((item) => {
-    const identificador = item.numeroControlePNCP;
+    const parametros = {
+      dataInicial: params.dataInicial,
+      dataFinal: params.dataFinal,
+      pagina: params.pagina,
+      tamanhoPagina: TAMANHO_PAGINA,
+    };
+
+    if (params.uf) {
+      parametros.uf = params.uf;
+    }
+
+    if (params.modalidade !== null && params.modalidade !== undefined) {
+      parametros.codigoModalidadeContratacao = params.modalidade;
+    }
+
+    let ultimoErro;
+
+    for (let tentativa = 0; tentativa < MAX_TENTATIVAS; tentativa++) {
+      try {
+        const resposta = await axios.get(PNCP_URL, {
+          params: parametros,
+          timeout: 25000,
+          headers: {
+            Accept: 'application/json',
+            'User-Agent': 'Gestorae/1.0',
+          },
+        });
+
+        const dados = resposta.data;
+
+        if (!dados || !Array.isArray(dados.data)) {
+          throw new Error(
+            'A API do PNCP retornou uma resposta em formato inesperado.'
+          );
+        }
+
+        cachePaginas.set(chave, {
+          timestamp: Date.now(),
+          dados,
+        });
+
+        // Pausa entre chamadas para reduzir o risco de bloqueio.
+        await aguardar(INTERVALO_REQUISICOES_MS);
+
+        return dados;
+      } catch (erro) {
+        ultimoErro = erro;
+
+        const status = erro.response?.status;
+        const podeTentarNovamente =
+          status === 429 ||
+          status === 408 ||
+          status >= 500 ||
+          !erro.response;
+
+        if (!podeTentarNovamente || tentativa === MAX_TENTATIVAS - 1) {
+          break;
+        }
+
+        const retryAfter = Number(
+          erro.response?.headers?.['retry-after']
+        );
+
+        // Se o servidor informar Retry-After, respeitamos o intervalo.
+        // Caso contrário, usamos espera progressiva.
+        const esperaMs =
+          Number.isFinite(retryAfter) && retryAfter > 0
+            ? retryAfter * 1000
+            : Math.min(2000 * (2 ** tentativa), 20000);
+
+        await aguardar(esperaMs);
+      }
+    }
+
+    const status = ultimoErro?.response?.status;
+
+    const erroFinal = new Error(
+      status === 429
+        ? 'O PNCP está limitando as consultas. Aguarde alguns minutos e tente novamente; as páginas já armazenadas em cache serão reaproveitadas.'
+        : `Falha ao consultar o PNCP${status ? ` (HTTP ${status})` : ''}: ${
+            ultimoErro?.message || 'erro desconhecido'
+          }`
+    );
+
+    erroFinal.status = status === 429 ? 429 : 502;
+    erroFinal.original = ultimoErro;
+
+    throw erroFinal;
+  });
+}
+
+function removerDuplicatas(registros) {
+  const vistos = new Set();
+
+  return registros.filter((registro) => {
+    const identificador =
+      registro.numeroControlePNCP ||
+      registro.id ||
+      [
+        registro.orgaoEntidade?.cnpj,
+        registro.anoCompra,
+        registro.sequencialCompra,
+      ].filter(Boolean).join('-');
 
     if (!identificador) {
+      // Sem identificador confiável, não descartamos o registro.
       return true;
     }
 
-    if (identificadores.has(identificador)) {
-      return false;
-    }
+    if (vistos.has(identificador)) return false;
 
-    identificadores.add(identificador);
-
+    vistos.add(identificador);
     return true;
   });
-};
+}
 
-const searchPncpBids = async (req, res) => {
+function filtrarPorTermos(registros, termos) {
+  if (!termos.length) return registros;
+
+  const termosNormalizados = termos
+    .map(normalizarTexto)
+    .filter(Boolean);
+
+  return registros.filter((registro) => {
+    const textoRegistro = normalizarTexto(
+      [
+        registro.objetoCompra,
+        registro.informacaoComplementar,
+        registro.modalidadeNome,
+        registro.orgaoEntidade?.razaoSocial,
+        registro.unidadeOrgao?.nomeUnidade,
+        registro.unidadeOrgao?.municipioNome,
+        registro.unidadeOrgao?.ufSigla,
+      ]
+        .filter(Boolean)
+        .join(' ')
+    );
+
+    // Mantém a lógica OR: basta um dos termos corresponder.
+    return termosNormalizados.some((termo) =>
+      textoRegistro.includes(termo)
+    );
+  });
+}
+
+function chavePesquisa({
+  dataInicial,
+  dataFinal,
+  uf,
+  modalidade,
+  termos,
+}) {
+  return JSON.stringify({
+    dataInicial,
+    dataFinal,
+    uf: uf || '',
+    modalidade: modalidade ?? 'todas',
+    termos: termos.map(normalizarTexto).sort(),
+  });
+}
+
+async function buscarTodasAsPaginas(filtros, totalPaginas) {
+  const registros = [];
+
+  // Sequencial, sem lotes paralelos.
+  // As páginas já obtidas ficam em cache se uma chamada falhar.
+  for (let pagina = 1; pagina <= totalPaginas; pagina++) {
+    const resposta = await requisitarPaginaPncp({
+      ...filtros,
+      pagina,
+    });
+
+    registros.push(...resposta.data);
+
+    // A quantidade real de páginas pode mudar entre consultas.
+    if (pagina === 1) {
+      totalPaginas = Math.min(
+        obterTotalPaginas(resposta),
+        1000
+      );
+    }
+  }
+
+  return removerDuplicatas(registros);
+}
+
+async function searchPncpBids(req, res) {
   try {
     const {
       termo = '',
-      uf,
+      uf = '',
       modalidade,
       pagina = 1,
       dataInicial,
       dataFinal,
     } = req.query;
 
-    const paginaSolicitada = Math.max(
-      1,
-      Number.parseInt(pagina, 10) || 1
+    const hoje = dataLocalISO();
+    const dataPadraoFinal = new Date();
+    dataPadraoFinal.setDate(dataPadraoFinal.getDate() + 30);
+
+    const inicio = formatarData(dataInicial || hoje);
+    const fim = formatarData(
+      dataFinal || dataLocalISO(dataPadraoFinal)
     );
 
-    // Datas padrão: hoje até 30 dias à frente.
-    const hoje = new Date();
-    const dataFutura = new Date(hoje);
+    if (!inicio || !fim) {
+      return res.status(400).json({
+        message: 'Informe as datas no formato YYYY-MM-DD.',
+      });
+    }
 
-    dataFutura.setDate(dataFutura.getDate() + 30);
+    if (inicio > fim) {
+      return res.status(400).json({
+        message: 'A data inicial não pode ser posterior à data final.',
+      });
+    }
 
-    const dtInicioFormatada = dataInicial
-      ? String(dataInicial).replace(/-/g, '')
-      : formatarData(hoje);
+    const ufNormalizada = String(uf || '').trim().toUpperCase();
 
-    const dtFimFormatada = dataFinal
-      ? String(dataFinal).replace(/-/g, '')
-      : formatarData(dataFutura);
-
-    // Validação das datas recebidas.
     if (
-      !/^\d{8}$/.test(dtInicioFormatada) ||
-      !/^\d{8}$/.test(dtFimFormatada)
+      ufNormalizada &&
+      !/^[A-Z]{2}$/.test(ufNormalizada)
     ) {
       return res.status(400).json({
-        message:
-          'Datas inválidas. Utilize o formato AAAA-MM-DD.',
+        message: 'A UF informada é inválida.',
       });
     }
 
-    if (dtInicioFormatada > dtFimFormatada) {
-      return res.status(400).json({
-        message:
-          'A data inicial não pode ser posterior à data final.',
-      });
-    }
-
-    // Monta os parâmetros básicos da consulta.
-    const paramsBase = {
-      dataInicial: dtInicioFormatada,
-      dataFinal: dtFimFormatada,
-      pagina: 1,
-      tamanhoPagina: TAMANHO_PAGINA,
-    };
-
-    // Aplica modalidade somente se houver uma seleção específica.
-    const codigoModalidade = normalizarModalidade(modalidade);
-
-    if (codigoModalidade !== null) {
-      paramsBase.codigoModalidadeContratacao =
-        codigoModalidade;
-    }
-
-    if (uf && String(uf).trim()) {
-      paramsBase.uf = String(uf).trim().toUpperCase();
-    }
-
+    const modalidadeNormalizada = normalizarModalidade(modalidade);
     const termos = extrairTermosDeBusca(termo);
 
-    console.log('=== CONSULTA PNCP ===');
-    console.log(
-      'Período:',
-      dtInicioFormatada,
-      'até',
-      dtFimFormatada
-    );
-    console.log('UF:', paramsBase.uf || 'Todas');
-    console.log(
-      'Modalidade:',
-      codigoModalidade === null
-        ? 'Todas'
-        : codigoModalidade
-    );
-    console.log('Quantidade de termos:', termos.length);
-    console.log('Página solicitada:', paginaSolicitada);
-
-    // Primeira consulta para obter os metadados do PNCP.
-    const primeiraResposta = await buscarPaginaPncp(
-      paramsBase
+    const paginaSolicitada = Math.max(
+      1,
+      Math.floor(Number(pagina) || 1)
     );
 
-    let resultados = [];
-    let totalRegistros = 0;
-    let totalPaginas = 1;
-    let numeroPagina = paginaSolicitada;
+    const filtros = {
+      dataInicial: inicio,
+      dataFinal: fim,
+      uf: ufNormalizada,
+      modalidade: modalidadeNormalizada,
+    };
 
-    if (termos.length > 0) {
-      // Com termos, percorre todas as páginas disponíveis
-      // antes de aplicar a pesquisa local.
-      const todosOsRegistros = await buscarTodasAsPaginas(
-        paramsBase,
-        primeiraResposta
-      );
+    // Sem termos: usa diretamente a paginação nativa do PNCP.
+    if (termos.length === 0) {
+      const resposta = await requisitarPaginaPncp({
+        ...filtros,
+        pagina: paginaSolicitada,
+      });
 
-      const resultadosFiltrados = filtrarPorTermos(
-        todosOsRegistros,
-        termos
-      );
+      const totalPaginas = obterTotalPaginas(resposta);
 
-      const listaFinal = removerDuplicatas(
-        resultadosFiltrados
-      );
-
-      totalRegistros = listaFinal.length;
-
-      totalPaginas = Math.max(
-        1,
-        Math.ceil(totalRegistros / TAMANHO_PAGINA)
-      );
-
-      numeroPagina = Math.min(
-        paginaSolicitada,
-        totalPaginas
-      );
-
-      const inicio =
-        (numeroPagina - 1) * TAMANHO_PAGINA;
-
-      resultados = listaFinal.slice(
-        inicio,
-        inicio + TAMANHO_PAGINA
-      );
-
-      console.log(
-        'Registros consultados no PNCP:',
-        todosOsRegistros.length
-      );
-      console.log(
-        'Registros encontrados pelos termos:',
-        totalRegistros
-      );
-      console.log(
-        'Páginas de resultados:',
-        totalPaginas
-      );
-    } else {
-      // Sem termos, utiliza a paginação original do PNCP.
-      const resposta =
-        paginaSolicitada === 1
-          ? primeiraResposta
-          : await buscarPaginaPncp({
-              ...paramsBase,
-              pagina: paginaSolicitada,
-            });
-
-      resultados = Array.isArray(resposta.data)
-        ? resposta.data
-        : [];
-
-      totalRegistros = Number(
-        resposta.totalRegistros || 0
-      );
-
-      totalPaginas = Math.max(
-        1,
-        Number(resposta.totalPaginas) || 1
-      );
-
-      numeroPagina = Number(
-        resposta.numeroPagina || paginaSolicitada
-      );
+      return res.json({
+        data: resposta.data,
+        totalRegistros: Number(resposta.totalRegistros ?? 0),
+        totalPaginas,
+        numeroPagina: paginaSolicitada,
+        paginasRestantes: Math.max(
+          0,
+          totalPaginas - paginaSolicitada
+        ),
+        empty: resposta.data.length === 0,
+      });
     }
 
-    return res.status(200).json({
-      ...primeiraResposta,
-      data: resultados,
-      totalRegistros,
-      totalPaginas,
-      numeroPagina,
-      paginasRestantes: Math.max(
-        0,
-        totalPaginas - numeroPagina
-      ),
-      empty: resultados.length === 0,
+    const chave = chavePesquisa({
+      ...filtros,
+      termos,
     });
-  } catch (error) {
-    console.error(
-      'Erro detalhado no PNCP:',
-      error.response?.data || error.message
+
+    limparCachesExpirados();
+
+    let resultadoCache = cachePesquisas.get(chave);
+
+    if (
+      !resultadoCache ||
+      Date.now() - resultadoCache.timestamp >= TEMPO_CACHE_MS
+    ) {
+      // Primeiro busca uma página para descobrir o total de páginas.
+      const primeiraPagina = await requisitarPaginaPncp({
+        ...filtros,
+        pagina: 1,
+      });
+
+      const totalPaginasPncp = Math.min(
+        obterTotalPaginas(primeiraPagina),
+        1000
+      );
+
+      let registros = [...primeiraPagina.data];
+
+      for (let numeroPagina = 2; numeroPagina <= totalPaginasPncp; numeroPagina++) {
+        const resposta = await requisitarPaginaPncp({
+          ...filtros,
+          pagina: numeroPagina,
+        });
+
+        registros.push(...resposta.data);
+      }
+
+      registros = removerDuplicatas(registros);
+      registros = filtrarPorTermos(registros, termos);
+
+      resultadoCache = {
+        timestamp: Date.now(),
+        registros,
+      };
+
+      cachePesquisas.set(chave, resultadoCache);
+    }
+
+    const registros = resultadoCache.registros;
+    const totalRegistros = registros.length;
+    const totalPaginas = Math.max(
+      1,
+      Math.ceil(totalRegistros / TAMANHO_PAGINA)
     );
 
-    return res.status(error.response?.status || 500).json({
-      message: 'Erro ao consultar API do PNCP',
-      error:
-        error.response?.data || error.message,
+    const inicioPagina = (paginaSolicitada - 1) * TAMANHO_PAGINA;
+    const dadosPagina = registros.slice(
+      inicioPagina,
+      inicioPagina + TAMANHO_PAGINA
+    );
+
+    return res.json({
+      data: dadosPagina,
+      totalRegistros,
+      totalPaginas,
+      numeroPagina: paginaSolicitada,
+      paginasRestantes: Math.max(
+        0,
+        totalPaginas - paginaSolicitada
+      ),
+      empty: dadosPagina.length === 0,
+    });
+  } catch (erro) {
+    console.error('Erro na consulta PNCP:', {
+      message: erro.message,
+      status: erro.status || erro.response?.status,
+      resposta: erro.response?.data,
+    });
+
+    const status = erro.status || 502;
+
+    return res.status(status).json({
+      message: erro.message || 'Não foi possível consultar o PNCP.',
+      code: status === 429 ? 'PNCP_RATE_LIMIT' : 'PNCP_ERROR',
     });
   }
-};
+}
 
-module.exports = { searchPncpBids };
+module.exports = {
+  searchPncpBids,
+};
