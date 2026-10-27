@@ -1,21 +1,19 @@
 
+
 const axios = require('axios');
+const { randomUUID } = require('crypto');
 
 const PNCP_URL =
   'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 
 const TAMANHO_PAGINA = 50;
+const INTERVALO_REQUISICOES_MS = 800;
 const TEMPO_CACHE_MS = 15 * 60 * 1000;
-const INTERVALO_REQUISICOES_MS = 500;
+const TEMPO_RETENCAO_JOB_MS = 30 * 60 * 1000;
 const MAX_TENTATIVAS = 4;
 
-// Cache temporário das páginas consultadas no PNCP.
 const cachePaginas = new Map();
-
-// Evita repetir imediatamente pesquisas completas idênticas.
-const cachePesquisas = new Map();
-
-// Fila global: somente uma requisição ao PNCP por vez.
+const jobs = new Map();
 let filaPncp = Promise.resolve();
 
 const aguardar = (ms) =>
@@ -23,50 +21,8 @@ const aguardar = (ms) =>
 
 function executarNaFila(funcao) {
   const tarefa = filaPncp.then(funcao, funcao);
-
-  filaPncp = tarefa.then(
-    () => undefined,
-    () => undefined
-  );
-
+  filaPncp = tarefa.then(() => undefined, () => undefined);
   return tarefa;
-}
-
-function limparCachesExpirados() {
-  const agora = Date.now();
-
-  for (const [chave, item] of cachePaginas.entries()) {
-    if (agora - item.timestamp > TEMPO_CACHE_MS) {
-      cachePaginas.delete(chave);
-    }
-  }
-
-  for (const [chave, item] of cachePesquisas.entries()) {
-    if (agora - item.timestamp > TEMPO_CACHE_MS) {
-      cachePesquisas.delete(chave);
-    }
-  }
-}
-
-function formatarData(data) {
-  if (!data) return '';
-
-  const valor = String(data).trim();
-
-  // Aceita YYYY-MM-DD ou YYYYMMDD.
-  if (/^\d{8}$/.test(valor)) {
-    return valor;
-  }
-
-  const correspondencia = valor.match(
-    /^(\d{4})-(\d{2})-(\d{2})$/
-  );
-
-  if (correspondencia) {
-    return `${correspondencia[1]}${correspondencia[2]}${correspondencia[3]}`;
-  }
-
-  return '';
 }
 
 function dataLocalISO(data = new Date()) {
@@ -75,6 +31,18 @@ function dataLocalISO(data = new Date()) {
   const dia = String(data.getDate()).padStart(2, '0');
 
   return `${ano}-${mes}-${dia}`;
+}
+
+function formatarData(data) {
+  if (!data) return '';
+
+  const valor = String(data).trim();
+
+  if (/^\d{8}$/.test(valor)) return valor;
+
+  const match = valor.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  return match ? `${match[1]}${match[2]}${match[3]}` : '';
 }
 
 function normalizarTexto(valor) {
@@ -88,26 +56,18 @@ function normalizarTexto(valor) {
 
 function extrairTermosDeBusca(entrada) {
   if (Array.isArray(entrada)) {
-    return entrada
-      .map((item) => String(item).trim())
-      .filter(Boolean);
+    return [...new Set(entrada.map(String).map(t => t.trim()).filter(Boolean))];
   }
 
   const texto = String(entrada ?? '').trim();
-
   if (!texto) return [];
 
-  // Aceita termos separados por vírgula e expressões entre aspas.
   const termos = [];
-  const expressao = /"([^"]+)"|([^,]+)/g;
-  let resultado;
+  const regex = /"([^"]+)"|([^,]+)/g;
+  let match;
 
-  while ((resultado = expressao.exec(texto)) !== null) {
-    const termo = (resultado[1] ?? resultado[2] ?? '')
-      .trim()
-      .replace(/^["']|["']$/g, '')
-      .trim();
-
+  while ((match = regex.exec(texto)) !== null) {
+    const termo = (match[1] ?? match[2] ?? '').trim();
     if (termo) termos.push(termo);
   }
 
@@ -115,9 +75,7 @@ function extrairTermosDeBusca(entrada) {
 }
 
 function normalizarModalidade(valor) {
-  if (valor === undefined || valor === null) {
-    return null;
-  }
+  if (valor === undefined || valor === null) return null;
 
   const texto = String(valor).trim().toLowerCase();
 
@@ -129,52 +87,56 @@ function normalizarModalidade(valor) {
   }
 
   const numero = Number(texto);
-
-  return Number.isInteger(numero) && numero > 0
-    ? numero
-    : null;
+  return Number.isInteger(numero) && numero > 0 ? numero : null;
 }
 
-function chavePagina({
-  dataInicial,
-  dataFinal,
-  uf,
-  modalidade,
-  pagina,
-}) {
-  return [
-    dataInicial,
-    dataFinal,
-    uf || '',
-    modalidade ?? 'todas',
-    pagina,
-  ].join('|');
-}
-
-function obterTotalPaginas(resposta) {
-  const total = Number(
-    resposta?.totalPaginas ??
-    resposta?.totalPaginasEncontradas ??
-    1
-  );
-
+function totalPaginasDaResposta(resposta) {
+  const total = Number(resposta?.totalPaginas ?? 1);
   return Number.isFinite(total) && total >= 1
     ? Math.floor(total)
     : 1;
 }
 
-async function requisitarPaginaPncp(params) {
-  const chave = chavePagina(params);
-  limparCachesExpirados();
+function chavePagina(filtros, pagina) {
+  return [
+    filtros.dataInicial,
+    filtros.dataFinal,
+    filtros.uf || '',
+    filtros.modalidade ?? 'todas',
+    pagina,
+  ].join('|');
+}
 
-  const itemCache = cachePaginas.get(chave);
+function limparCaches() {
+  const agora = Date.now();
 
-  if (itemCache && Date.now() - itemCache.timestamp < TEMPO_CACHE_MS) {
-    return itemCache.dados;
+  for (const [chave, item] of cachePaginas.entries()) {
+    if (agora - item.timestamp > TEMPO_CACHE_MS) {
+      cachePaginas.delete(chave);
+    }
+  }
+
+  for (const [id, job] of jobs.entries()) {
+    if (
+      job.status !== 'running' &&
+      agora - job.updatedAt > TEMPO_RETENCAO_JOB_MS
+    ) {
+      jobs.delete(id);
+    }
+  }
+}
+
+async function requisitarPaginaPncp(filtros, pagina) {
+  limparCaches();
+
+  const chave = chavePagina(filtros, pagina);
+  const cache = cachePaginas.get(chave);
+
+  if (cache && Date.now() - cache.timestamp < TEMPO_CACHE_MS) {
+    return cache.dados;
   }
 
   return executarNaFila(async () => {
-    // Outra consulta pode ter preenchido o cache enquanto aguardávamos.
     const cacheAtual = cachePaginas.get(chave);
 
     if (
@@ -184,19 +146,17 @@ async function requisitarPaginaPncp(params) {
       return cacheAtual.dados;
     }
 
-    const parametros = {
-      dataInicial: params.dataInicial,
-      dataFinal: params.dataFinal,
-      pagina: params.pagina,
+    const params = {
+      dataInicial: filtros.dataInicial,
+      dataFinal: filtros.dataFinal,
+      pagina,
       tamanhoPagina: TAMANHO_PAGINA,
     };
 
-    if (params.uf) {
-      parametros.uf = params.uf;
-    }
+    if (filtros.uf) params.uf = filtros.uf;
 
-    if (params.modalidade !== null && params.modalidade !== undefined) {
-      parametros.codigoModalidadeContratacao = params.modalidade;
+    if (filtros.modalidade !== null) {
+      params.codigoModalidadeContratacao = filtros.modalidade;
     }
 
     let ultimoErro;
@@ -204,7 +164,7 @@ async function requisitarPaginaPncp(params) {
     for (let tentativa = 0; tentativa < MAX_TENTATIVAS; tentativa++) {
       try {
         const resposta = await axios.get(PNCP_URL, {
-          params: parametros,
+          params,
           timeout: 25000,
           headers: {
             Accept: 'application/json',
@@ -212,64 +172,51 @@ async function requisitarPaginaPncp(params) {
           },
         });
 
-        const dados = resposta.data;
-
-        if (!dados || !Array.isArray(dados.data)) {
-          throw new Error(
-            'A API do PNCP retornou uma resposta em formato inesperado.'
-          );
+        if (!Array.isArray(resposta.data?.data)) {
+          throw new Error('O PNCP retornou uma resposta inesperada.');
         }
 
         cachePaginas.set(chave, {
           timestamp: Date.now(),
-          dados,
+          dados: resposta.data,
         });
 
-        // Pausa entre chamadas para reduzir o risco de bloqueio.
         await aguardar(INTERVALO_REQUISICOES_MS);
 
-        return dados;
+        return resposta.data;
       } catch (erro) {
         ultimoErro = erro;
 
         const status = erro.response?.status;
-        const podeTentarNovamente =
+        const podeRepetir =
           status === 429 ||
           status === 408 ||
           status >= 500 ||
           !erro.response;
 
-        if (!podeTentarNovamente || tentativa === MAX_TENTATIVAS - 1) {
+        if (!podeRepetir || tentativa === MAX_TENTATIVAS - 1) {
           break;
         }
 
-        const retryAfter = Number(
-          erro.response?.headers?.['retry-after']
-        );
+        const retryAfter = Number(erro.response?.headers?.['retry-after']);
 
-        // Se o servidor informar Retry-After, respeitamos o intervalo.
-        // Caso contrário, usamos espera progressiva.
-        const esperaMs =
+        const espera =
           Number.isFinite(retryAfter) && retryAfter > 0
             ? retryAfter * 1000
             : Math.min(2000 * (2 ** tentativa), 20000);
 
-        await aguardar(esperaMs);
+        await aguardar(espera);
       }
     }
 
-    const status = ultimoErro?.response?.status;
-
     const erroFinal = new Error(
-      status === 429
-        ? 'O PNCP está limitando as consultas. Aguarde alguns minutos e tente novamente; as páginas já armazenadas em cache serão reaproveitadas.'
-        : `Falha ao consultar o PNCP${status ? ` (HTTP ${status})` : ''}: ${
-            ultimoErro?.message || 'erro desconhecido'
-          }`
+      ultimoErro?.response?.status === 429
+        ? 'O PNCP está limitando as consultas. Tente novamente mais tarde.'
+        : `Falha ao consultar o PNCP: ${ultimoErro?.message || 'erro desconhecido'}`
     );
 
-    erroFinal.status = status === 429 ? 429 : 502;
-    erroFinal.original = ultimoErro;
+    erroFinal.status =
+      ultimoErro?.response?.status === 429 ? 429 : 502;
 
     throw erroFinal;
   });
@@ -279,7 +226,7 @@ function removerDuplicatas(registros) {
   const vistos = new Set();
 
   return registros.filter((registro) => {
-    const identificador =
+    const id =
       registro.numeroControlePNCP ||
       registro.id ||
       [
@@ -288,254 +235,245 @@ function removerDuplicatas(registros) {
         registro.sequencialCompra,
       ].filter(Boolean).join('-');
 
-    if (!identificador) {
-      // Sem identificador confiável, não descartamos o registro.
-      return true;
-    }
+    if (!id) return true;
+    if (vistos.has(id)) return false;
 
-    if (vistos.has(identificador)) return false;
-
-    vistos.add(identificador);
+    vistos.add(id);
     return true;
   });
 }
 
-function filtrarPorTermos(registros, termos) {
-  if (!termos.length) return registros;
+function registroCorresponde(registro, termos) {
+  const texto = normalizarTexto([
+    registro.objetoCompra,
+    registro.informacaoComplementar,
+    registro.modalidadeNome,
+    registro.orgaoEntidade?.razaoSocial,
+    registro.unidadeOrgao?.nomeUnidade,
+    registro.unidadeOrgao?.municipioNome,
+    registro.unidadeOrgao?.ufSigla,
+  ].filter(Boolean).join(' '));
 
-  const termosNormalizados = termos
-    .map(normalizarTexto)
-    .filter(Boolean);
-
-  return registros.filter((registro) => {
-    const textoRegistro = normalizarTexto(
-      [
-        registro.objetoCompra,
-        registro.informacaoComplementar,
-        registro.modalidadeNome,
-        registro.orgaoEntidade?.razaoSocial,
-        registro.unidadeOrgao?.nomeUnidade,
-        registro.unidadeOrgao?.municipioNome,
-        registro.unidadeOrgao?.ufSigla,
-      ]
-        .filter(Boolean)
-        .join(' ')
-    );
-
-    // Mantém a lógica OR: basta um dos termos corresponder.
-    return termosNormalizados.some((termo) =>
-      textoRegistro.includes(termo)
-    );
-  });
+  return termos.some((termo) =>
+    texto.includes(normalizarTexto(termo))
+  );
 }
 
-function chavePesquisa({
-  dataInicial,
-  dataFinal,
-  uf,
-  modalidade,
-  termos,
-}) {
-  return JSON.stringify({
-    dataInicial,
-    dataFinal,
-    uf: uf || '',
-    modalidade: modalidade ?? 'todas',
-    termos: termos.map(normalizarTexto).sort(),
-  });
-}
+function obterFiltros(entrada) {
+  const hoje = dataLocalISO();
+  const dataFinalPadrao = new Date();
+  dataFinalPadrao.setDate(dataFinalPadrao.getDate() + 30);
 
-async function buscarTodasAsPaginas(filtros, totalPaginas) {
-  const registros = [];
+  const dataInicial = formatarData(entrada.dataInicial || hoje);
+  const dataFinal = formatarData(
+    entrada.dataFinal || dataLocalISO(dataFinalPadrao)
+  );
 
-  // Sequencial, sem lotes paralelos.
-  // As páginas já obtidas ficam em cache se uma chamada falhar.
-  for (let pagina = 1; pagina <= totalPaginas; pagina++) {
-    const resposta = await requisitarPaginaPncp({
-      ...filtros,
-      pagina,
-    });
-
-    registros.push(...resposta.data);
-
-    // A quantidade real de páginas pode mudar entre consultas.
-    if (pagina === 1) {
-      totalPaginas = Math.min(
-        obterTotalPaginas(resposta),
-        1000
-      );
-    }
+  if (!dataInicial || !dataFinal) {
+    const erro = new Error('Informe datas válidas no formato YYYY-MM-DD.');
+    erro.status = 400;
+    throw erro;
   }
 
-  return removerDuplicatas(registros);
+  if (dataInicial > dataFinal) {
+    const erro = new Error(
+      'A data inicial não pode ser posterior à data final.'
+    );
+    erro.status = 400;
+    throw erro;
+  }
+
+  const uf = String(entrada.uf || '').trim().toUpperCase();
+
+  if (uf && !/^[A-Z]{2}$/.test(uf)) {
+    const erro = new Error('A UF informada é inválida.');
+    erro.status = 400;
+    throw erro;
+  }
+
+  return {
+    dataInicial,
+    dataFinal,
+    uf,
+    modalidade: normalizarModalidade(entrada.modalidade),
+  };
+}
+
+function montarRespostaJob(job, pagina = 1) {
+  const totalRegistros = job.resultados.length;
+  const totalPaginas = Math.max(
+    1,
+    Math.ceil(totalRegistros / TAMANHO_PAGINA)
+  );
+
+  const paginaSegura = Math.max(
+    1,
+    Math.min(Number(pagina) || 1, totalPaginas)
+  );
+
+  const inicio = (paginaSegura - 1) * TAMANHO_PAGINA;
+
+  return {
+    jobId: job.id,
+    status: job.status,
+    progresso: job.totalPaginas > 0
+      ? Math.floor((job.paginasConcluidas / job.totalPaginas) * 100)
+      : 0,
+    paginasConcluidas: job.paginasConcluidas,
+    totalPaginasConsulta: job.totalPaginas,
+    totalRegistros: job.status === 'completed'
+      ? totalRegistros
+      : totalRegistros,
+    totalPaginas,
+    numeroPagina: paginaSegura,
+    data: job.resultados.slice(inicio, inicio + TAMANHO_PAGINA),
+    erro: job.erro || null,
+    empty: job.status === 'completed' && totalRegistros === 0,
+  };
+}
+
+async function processarJob(job) {
+  try {
+    job.status = 'running';
+    job.updatedAt = Date.now();
+
+    const primeira = await requisitarPaginaPncp(job.filtros, 1);
+    job.totalPaginas = Math.min(totalPaginasDaResposta(primeira), 1000);
+
+    const vistos = new Set();
+
+    const processarRegistros = (registros) => {
+      for (const registro of registros) {
+        const id =
+          registro.numeroControlePNCP ||
+          registro.id ||
+          [
+            registro.orgaoEntidade?.cnpj,
+            registro.anoCompra,
+            registro.sequencialCompra,
+          ].filter(Boolean).join('-');
+
+        if (id && vistos.has(id)) continue;
+        if (id) vistos.add(id);
+
+        if (registroCorresponde(registro, job.termos)) {
+          job.resultados.push(registro);
+        }
+      }
+    };
+
+    processarRegistros(primeira.data);
+    job.paginasConcluidas = 1;
+    job.updatedAt = Date.now();
+
+    for (let pagina = 2; pagina <= job.totalPaginas; pagina++) {
+      const resposta = await requisitarPaginaPncp(job.filtros, pagina);
+
+      processarRegistros(resposta.data);
+
+      job.paginasConcluidas = pagina;
+      job.updatedAt = Date.now();
+    }
+
+    job.status = 'completed';
+    job.updatedAt = Date.now();
+  } catch (erro) {
+    job.status = 'failed';
+    job.erro = erro.message || 'Erro ao processar a pesquisa.';
+    job.updatedAt = Date.now();
+  }
+}
+
+async function startPncpSearch(req, res) {
+  try {
+    const filtros = obterFiltros(req.body || {});
+    const termos = extrairTermosDeBusca(req.body?.termo);
+
+    if (termos.length === 0) {
+      return res.status(400).json({
+        message: 'Informe ao menos um termo para iniciar a pesquisa em segundo plano.',
+      });
+    }
+
+    const id = randomUUID();
+
+    const job = {
+      id,
+      status: 'queued',
+      filtros,
+      termos,
+      resultados: [],
+      paginasConcluidas: 0,
+      totalPaginas: 0,
+      erro: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    jobs.set(id, job);
+
+    // Não aguardamos o processamento terminar para responder ao frontend.
+    setImmediate(() => {
+      processarJob(job);
+    });
+
+    return res.status(202).json({
+      jobId: id,
+      status: job.status,
+      message: 'Pesquisa iniciada.',
+    });
+  } catch (erro) {
+    return res.status(erro.status || 500).json({
+      message: erro.message || 'Não foi possível iniciar a pesquisa.',
+    });
+  }
+}
+
+function getPncpSearchJob(req, res) {
+  limparCaches();
+
+  const job = jobs.get(req.params.id);
+
+  if (!job) {
+    return res.status(404).json({
+      message: 'Pesquisa não encontrada ou expirada. Inicie uma nova consulta.',
+    });
+  }
+
+  return res.json(
+    montarRespostaJob(job, req.query.pagina || 1)
+  );
 }
 
 async function searchPncpBids(req, res) {
   try {
-    const {
-      termo = '',
-      uf = '',
-      modalidade,
-      pagina = 1,
-      dataInicial,
-      dataFinal,
-    } = req.query;
-
-    const hoje = dataLocalISO();
-    const dataPadraoFinal = new Date();
-    dataPadraoFinal.setDate(dataPadraoFinal.getDate() + 30);
-
-    const inicio = formatarData(dataInicial || hoje);
-    const fim = formatarData(
-      dataFinal || dataLocalISO(dataPadraoFinal)
-    );
-
-    if (!inicio || !fim) {
-      return res.status(400).json({
-        message: 'Informe as datas no formato YYYY-MM-DD.',
-      });
-    }
-
-    if (inicio > fim) {
-      return res.status(400).json({
-        message: 'A data inicial não pode ser posterior à data final.',
-      });
-    }
-
-    const ufNormalizada = String(uf || '').trim().toUpperCase();
-
-    if (
-      ufNormalizada &&
-      !/^[A-Z]{2}$/.test(ufNormalizada)
-    ) {
-      return res.status(400).json({
-        message: 'A UF informada é inválida.',
-      });
-    }
-
-    const modalidadeNormalizada = normalizarModalidade(modalidade);
-    const termos = extrairTermosDeBusca(termo);
-
-    const paginaSolicitada = Math.max(
-      1,
-      Math.floor(Number(pagina) || 1)
-    );
-
-    const filtros = {
-      dataInicial: inicio,
-      dataFinal: fim,
-      uf: ufNormalizada,
-      modalidade: modalidadeNormalizada,
-    };
-
-    // Sem termos: usa diretamente a paginação nativa do PNCP.
-    if (termos.length === 0) {
-      const resposta = await requisitarPaginaPncp({
-        ...filtros,
-        pagina: paginaSolicitada,
-      });
-
-      const totalPaginas = obterTotalPaginas(resposta);
-
-      return res.json({
-        data: resposta.data,
-        totalRegistros: Number(resposta.totalRegistros ?? 0),
-        totalPaginas,
-        numeroPagina: paginaSolicitada,
-        paginasRestantes: Math.max(
-          0,
-          totalPaginas - paginaSolicitada
-        ),
-        empty: resposta.data.length === 0,
-      });
-    }
-
-    const chave = chavePesquisa({
-      ...filtros,
-      termos,
-    });
-
-    limparCachesExpirados();
-
-    let resultadoCache = cachePesquisas.get(chave);
-
-    if (
-      !resultadoCache ||
-      Date.now() - resultadoCache.timestamp >= TEMPO_CACHE_MS
-    ) {
-      // Primeiro busca uma página para descobrir o total de páginas.
-      const primeiraPagina = await requisitarPaginaPncp({
-        ...filtros,
-        pagina: 1,
-      });
-
-      const totalPaginasPncp = Math.min(
-        obterTotalPaginas(primeiraPagina),
-        1000
-      );
-
-      let registros = [...primeiraPagina.data];
-
-      for (let numeroPagina = 2; numeroPagina <= totalPaginasPncp; numeroPagina++) {
-        const resposta = await requisitarPaginaPncp({
-          ...filtros,
-          pagina: numeroPagina,
-        });
-
-        registros.push(...resposta.data);
-      }
-
-      registros = removerDuplicatas(registros);
-      registros = filtrarPorTermos(registros, termos);
-
-      resultadoCache = {
-        timestamp: Date.now(),
-        registros,
-      };
-
-      cachePesquisas.set(chave, resultadoCache);
-    }
-
-    const registros = resultadoCache.registros;
-    const totalRegistros = registros.length;
-    const totalPaginas = Math.max(
-      1,
-      Math.ceil(totalRegistros / TAMANHO_PAGINA)
-    );
-
-    const inicioPagina = (paginaSolicitada - 1) * TAMANHO_PAGINA;
-    const dadosPagina = registros.slice(
-      inicioPagina,
-      inicioPagina + TAMANHO_PAGINA
-    );
+    const filtros = obterFiltros(req.query);
+    const pagina = Math.max(1, Math.floor(Number(req.query.pagina) || 1));
+    const resposta = await requisitarPaginaPncp(filtros, pagina);
 
     return res.json({
-      data: dadosPagina,
-      totalRegistros,
-      totalPaginas,
-      numeroPagina: paginaSolicitada,
+      data: resposta.data,
+      totalRegistros: Number(resposta.totalRegistros ?? 0),
+      totalPaginas: totalPaginasDaResposta(resposta),
+      numeroPagina: pagina,
       paginasRestantes: Math.max(
         0,
-        totalPaginas - paginaSolicitada
+        totalPaginasDaResposta(resposta) - pagina
       ),
-      empty: dadosPagina.length === 0,
+      empty: resposta.data.length === 0,
     });
   } catch (erro) {
-    console.error('Erro na consulta PNCP:', {
-      message: erro.message,
-      status: erro.status || erro.response?.status,
-      resposta: erro.response?.data,
-    });
+    console.error('Erro na consulta PNCP:', erro.message);
 
-    const status = erro.status || 502;
-
-    return res.status(status).json({
+    return res.status(erro.status || 502).json({
       message: erro.message || 'Não foi possível consultar o PNCP.',
-      code: status === 429 ? 'PNCP_RATE_LIMIT' : 'PNCP_ERROR',
+      code: erro.status === 429 ? 'PNCP_RATE_LIMIT' : 'PNCP_ERROR',
     });
   }
 }
 
 module.exports = {
   searchPncpBids,
+  startPncpSearch,
+  getPncpSearchJob,
 };
