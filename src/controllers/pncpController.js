@@ -13,23 +13,16 @@ const searchPncpBids = async (req, res) => {
 
     const formatarData = (date) => date.toISOString().split('T')[0].replace(/-/g, '');
 
+    // Se houver palavra-chave, aumentamos a busca inicial para 50 itens para podermos filtrar com precisão
+    const tamanhoPagina = (termo && termo.trim() !== '') ? 50 : 10;
+
     const params = {
       dataInicial: formatarData(trintaDiasAtras),
       dataFinal: formatarData(hoje),
+      codigoModalidadeContratacao: modalidade ? Number(modalidade) : 6,
       pagina: Number(pagina),
-      tamanhoPagina: 10,
+      tamanhoPagina: tamanhoPagina,
     };
-
-    if (modalidade && modalidade !== '') {
-      params.codigoModalidadeContratacao = Number(modalidade);
-    } else {
-      params.codigoModalidadeContratacao = 6;
-    }
-
-    // O PNCP utiliza o parâmetro 'q' ou 'descricaoContratacao' para busca textual por palavra-chave
-    if (termo && termo.trim() !== '') {
-      params.q = termo.trim();
-    }
 
     if (uf) params.uf = uf.toUpperCase();
 
@@ -43,17 +36,21 @@ const searchPncpBids = async (req, res) => {
 
     let dataResult = response.data;
 
-    // Filtro adicional no backend para garantir rigor nos resultados
+    // Filtro estrito por palavra-chave no Node.js
     if (termo && termo.trim() !== '' && Array.isArray(dataResult.data)) {
-      const palavraChave = termo.trim().toLowerCase();
-      const resultadosFiltrados = dataResult.data.filter(item => 
-        item.objetoCompra && item.objetoCompra.toLowerCase().includes(palavraChave)
-      );
-      
-      // Se o filtro local encontrar itens correspondentes, atualiza o array de dados
-      if (resultadosFiltrados.length > 0) {
-        dataResult.data = resultadosFiltrados;
-      }
+      const termoBusca = termo.trim().toLowerCase();
+
+      const itensFiltrados = dataResult.data.filter((item) => {
+        const objeto = (item.objetoCompra || '').toLowerCase();
+        const orgao = (item.orgaoEntidade?.razaoSocial || '').toLowerCase();
+        
+        return objeto.includes(termoBusca) || orgao.includes(termoBusca);
+      });
+
+      // Sobrescreve os dados e ajusta as métricas para a tela do React
+      dataResult.data = itensFiltrados;
+      dataResult.totalRegistros = itensFiltrados.length;
+      dataResult.totalPaginas = Math.ceil(itensFiltrados.length / 10) || 1;
     }
 
     res.status(200).json(dataResult);
