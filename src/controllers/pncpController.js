@@ -18,26 +18,12 @@ const URL_MODALIDADES =
   `${PNCP_BASE_URL}/modalidades`;
 
 const TAMANHO_PAGINA = 50;
-
-// Intervalo mínimo entre requisições ao PNCP.
 const INTERVALO_REQUISICOES_MS = 1500;
-
-// Espera padrão para HTTP 429 quando o servidor não informa Retry-After.
 const ESPERA_RATE_LIMIT_MS = 60_000;
-
-// Evita repetir indefinidamente uma requisição com erro.
 const MAX_TENTATIVAS = 3;
-
-// Limite de segurança por etapa da pesquisa.
 const MAX_PAGINAS_CONSULTA = 1000;
-
-// Cache de páginas para evitar chamadas repetidas.
 const CACHE_TTL_MS = 15 * 60 * 1000;
-
-// Mantém os trabalhos concluídos disponíveis por 30 minutos.
 const JOB_RETENTION_MS = 30 * 60 * 1000;
-
-// Limite para o tempo de espera de uma requisição HTTP.
 const TIMEOUT_REQUISICAO_MS = 30_000;
 
 // ============================================================
@@ -50,13 +36,7 @@ const filaJobs = [];
 
 let processamentoFilaAtivo = false;
 let ultimaRequisicaoPncp = 0;
-
-// Bloqueio global após HTTP 429.
-// Todas as pesquisas aguardam esse bloqueio, não apenas a pesquisa
-// que recebeu o erro.
 let bloqueioPncpAte = 0;
-
-// Serializa todas as chamadas ao PNCP dentro desta instância.
 let filaPncp = Promise.resolve();
 
 // ============================================================
@@ -82,12 +62,10 @@ function normalizarData(data) {
 
   const valor = String(data).trim();
 
-  // AAAAMMDD
   if (/^\d{8}$/.test(valor)) {
     return valor;
   }
 
-  // AAAA-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(valor)) {
     return valor.replace(/-/g, '');
   }
@@ -118,6 +96,8 @@ function validarData(data) {
 }
 
 function dataHojeFormatoPncp() {
+  // Utiliza a data local do servidor, mantendo o comportamento
+  // anterior desta aplicação.
   const agora = new Date();
 
   const ano = agora.getFullYear();
@@ -127,31 +107,63 @@ function dataHojeFormatoPncp() {
   return `${ano}${mes}${dia}`;
 }
 
-function obterFiltros(entrada = {}) {
-  const dataInicial = normalizarData(entrada.dataInicial);
-  const dataFinal = normalizarData(entrada.dataFinal);
+// NOVO: calcula uma data anterior sem depender do fuso horário.
+function dataDiasAntesFormatoPncp(dataBase, dias) {
+  const ano = Number(dataBase.slice(0, 4));
+  const mes = Number(dataBase.slice(4, 6));
+  const dia = Number(dataBase.slice(6, 8));
 
-  if (entrada.dataInicial && !dataInicial) {
+  const data = new Date(Date.UTC(ano, mes - 1, dia));
+  data.setUTCDate(data.getUTCDate() - dias);
+
+  const anoResultado = data.getUTCFullYear();
+  const mesResultado = String(data.getUTCMonth() + 1).padStart(2, '0');
+  const diaResultado = String(data.getUTCDate()).padStart(2, '0');
+
+  return `${anoResultado}${mesResultado}${diaResultado}`;
+}
+
+function obterFiltros(entrada = {}) {
+  const dataInicialInformada = normalizarData(entrada.dataInicial);
+  const dataFinalInformada = normalizarData(entrada.dataFinal);
+
+  if (entrada.dataInicial && !dataInicialInformada) {
     throw new Error(
       'Data inicial inválida. Utilize AAAA-MM-DD ou AAAAMMDD.'
     );
   }
 
-  if (entrada.dataFinal && !dataFinal) {
+  if (entrada.dataFinal && !dataFinalInformada) {
     throw new Error(
       'Data final inválida. Utilize AAAA-MM-DD ou AAAAMMDD.'
     );
   }
 
-  if (dataInicial && !validarData(dataInicial)) {
+  if (
+    dataInicialInformada &&
+    !validarData(dataInicialInformada)
+  ) {
     throw new Error('A data inicial não é uma data válida.');
   }
 
-  if (dataFinal && !validarData(dataFinal)) {
+  if (
+    dataFinalInformada &&
+    !validarData(dataFinalInformada)
+  ) {
     throw new Error('A data final não é uma data válida.');
   }
 
-  if (dataInicial && dataFinal && dataInicial > dataFinal) {
+  // Se a data final não for informada, utiliza a data atual.
+  const dataFinal =
+    dataFinalInformada || dataHojeFormatoPncp();
+
+  // Se a data inicial não for informada, utiliza os 30 dias
+  // anteriores à data final efetiva.
+  const dataInicial =
+    dataInicialInformada ||
+    dataDiasAntesFormatoPncp(dataFinal, 30);
+
+  if (dataInicial > dataFinal) {
     throw new Error(
       'A data inicial não pode ser posterior à data final.'
     );
@@ -162,14 +174,16 @@ function obterFiltros(entrada = {}) {
     .toUpperCase();
 
   if (uf && !/^[A-Z]{2}$/.test(uf)) {
-    throw new Error('UF inválida. Informe uma sigla de dois caracteres.');
+    throw new Error(
+      'UF inválida. Informe uma sigla de dois caracteres.'
+    );
   }
 
   const modalidades = obterModalidades(entrada);
 
   return {
     dataInicial,
-    dataFinal: dataFinal || dataHojeFormatoPncp(),
+    dataFinal,
     uf,
     modalidades,
     termo: String(entrada.termo || '').trim(),
@@ -207,15 +221,13 @@ function obterModalidades(entrada = {}) {
     valores = [valores];
   }
 
-  const modalidades = [
+  return [
     ...new Set(
       valores
         .map((valor) => Number(valor))
         .filter((valor) => Number.isInteger(valor) && valor > 0)
     ),
   ];
-
-  return modalidades;
 }
 
 function extrairRegistros(resposta) {
@@ -276,7 +288,6 @@ function extrairIdentificador(item) {
     return String(controlePNCP);
   }
 
-  // Fallback para objetos sem identificador padronizado.
   return [
     item?.objetoCompra || item?.objeto || '',
     item?.dataPublicacaoPncp || item?.dataPublicacao || '',
@@ -338,10 +349,8 @@ function obterRetryAfterMs(headers = {}) {
 
 function criarErroHttp(mensagem, status, detalhes = {}) {
   const erro = new Error(mensagem);
-
   erro.status = status;
   Object.assign(erro, detalhes);
-
   return erro;
 }
 
@@ -386,7 +395,6 @@ async function respeitarLimitePncp() {
     await dormir(tempoRestante);
   }
 
-  // Revalida o bloqueio depois da espera de intervalo.
   const bloqueioRestante = bloqueioPncpAte - Date.now();
 
   if (bloqueioRestante > 0) {
@@ -398,10 +406,7 @@ async function respeitarLimitePncp() {
 
 function executarNaFilaPncp(funcao) {
   const execucao = filaPncp.then(funcao, funcao);
-
-  // Mantém a fila operacional mesmo se uma chamada falhar.
   filaPncp = execucao.catch(() => {});
-
   return execucao;
 }
 
@@ -416,20 +421,13 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
 
   if (!opcoes.ignorarCache) {
     const cacheado = obterCache(chaveCache);
-
-    if (cacheado !== null) {
-      return cacheado;
-    }
+    if (cacheado !== null) return cacheado;
   }
 
   return executarNaFilaPncp(async () => {
-    // Outra chamada pode ter preenchido o cache enquanto aguardávamos.
     if (!opcoes.ignorarCache) {
       const cacheado = obterCache(chaveCache);
-
-      if (cacheado !== null) {
-        return cacheado;
-      }
+      if (cacheado !== null) return cacheado;
     }
 
     let ultimaFalha;
@@ -457,7 +455,6 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
             resposta.headers || {}
           );
 
-          // Bloqueia globalmente as próximas chamadas ao PNCP.
           bloqueioPncpAte = Math.max(
             bloqueioPncpAte,
             Date.now() + esperaMs
@@ -479,23 +476,17 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
           );
         }
 
-        const dados = resposta.data;
-
-        salvarCache(chaveCache, dados);
-
-        return dados;
+        salvarCache(chaveCache, resposta.data);
+        return resposta.data;
       } catch (erro) {
         ultimaFalha = erro;
 
-        // Em caso de 429, não insistir imediatamente.
         if (erro.status === 429 || erro.response?.status === 429) {
           throw erro;
         }
 
         const status = erro.status || erro.response?.status;
 
-        // Erros HTTP de cliente não costumam ser resolvidos repetindo
-        // a mesma requisição.
         if (
           status >= 400 &&
           status < 500 &&
@@ -505,12 +496,7 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
         }
 
         if (tentativa < MAX_TENTATIVAS) {
-          const espera = Math.min(
-            2000 * tentativa,
-            10_000
-          );
-
-          await dormir(espera);
+          await dormir(Math.min(2000 * tentativa, 10_000));
         }
       }
     }
@@ -543,7 +529,6 @@ async function obterTodasModalidadesAtivas() {
 
   let registros = extrairRegistros(resposta);
 
-  // Algumas respostas podem envolver os registros em um objeto data.
   if (
     registros.length === 0 &&
     Array.isArray(resposta?.data?.content)
@@ -580,8 +565,6 @@ async function obterTodasModalidadesAtivas() {
 async function criarEtapas(filtros) {
   const etapas = [];
 
-  // Etapa 1: contratações com recebimento de propostas aberto.
-  // O endpoint utiliza dataFinal. Não oferece dataInicial equivalente.
   etapas.push({
     fonte: 'proposta',
     modalidade: null,
@@ -590,8 +573,6 @@ async function criarEtapas(filtros) {
     concluida: false,
   });
 
-  // Etapa 2 em diante: contratações por data de publicação.
-  // A API exige uma modalidade para esse endpoint.
   const modalidades =
     filtros.modalidades.length > 0
       ? filtros.modalidades
@@ -631,7 +612,7 @@ function montarParametros(etapa, filtros) {
     return parametros;
   }
 
-  parametros.dataInicial = filtros.dataInicial || filtros.dataFinal;
+  parametros.dataInicial = filtros.dataInicial;
   parametros.dataFinal = filtros.dataFinal;
   parametros.codigoModalidadeContratacao = etapa.modalidade;
 
@@ -675,9 +656,7 @@ function adicionarResultados(job, registros) {
 }
 
 function calcularProgresso(job) {
-  if (job.etapas.length === 0) {
-    return 0;
-  }
+  if (job.etapas.length === 0) return 0;
 
   let totalPaginasEstimadas = 0;
   let paginasConcluidas = 0;
@@ -696,9 +675,7 @@ function calcularProgresso(job) {
     }
   }
 
-  if (totalPaginasEstimadas === 0) {
-    return 0;
-  }
+  if (totalPaginasEstimadas === 0) return 0;
 
   return Math.min(
     99,
@@ -710,8 +687,7 @@ function calcularProgresso(job) {
 
 function contarPaginasConcluidas(job) {
   return job.etapas.reduce(
-    (total, etapa) =>
-      total + Math.max(0, etapa.pagina - 1),
+    (total, etapa) => total + Math.max(0, etapa.pagina - 1),
     0
   );
 }
@@ -811,9 +787,7 @@ function agendarRetomada(job, esperaMs, erro) {
   setTimeout(() => {
     const jobAtual = jobs.get(job.id);
 
-    if (!jobAtual || jobAtual.status !== 'paused') {
-      return;
-    }
+    if (!jobAtual || jobAtual.status !== 'paused') return;
 
     jobAtual.erro = null;
     jobAtual.proximaTentativaEm = null;
@@ -844,11 +818,7 @@ async function processarJob(job) {
 
       job.atualizadoEm = Date.now();
 
-      const resposta = await consultarEtapa(
-        etapa,
-        job.filtros
-      );
-
+      const resposta = await consultarEtapa(etapa, job.filtros);
       const registros = extrairRegistros(resposta);
 
       adicionarResultados(job, registros);
@@ -859,9 +829,6 @@ async function processarJob(job) {
         etapa.totalPaginas = totalPaginas;
       }
 
-      // Se a API informou total de páginas, respeitamos esse total.
-      // Caso contrário, encerramos quando uma página vier vazia
-      // ou menor que o tamanho solicitado.
       const temMaisPaginas =
         etapa.totalPaginas !== null
           ? etapa.pagina < etapa.totalPaginas
@@ -873,9 +840,6 @@ async function processarJob(job) {
         etapa.concluida = true;
         job.etapaAtual += 1;
       } else {
-        // A página só avança depois de uma resposta processada.
-        // Se a próxima requisição falhar com 429, retomaremos
-        // exatamente a página pendente.
         etapa.pagina += 1;
       }
     }
@@ -936,8 +900,6 @@ async function processarFilaJobs() {
   } finally {
     processamentoFilaAtivo = false;
 
-    // Evita deixar trabalhos aguardando caso um novo item tenha
-    // entrado na fila no final do processamento.
     if (filaJobs.length > 0) {
       processarFilaJobs();
     }
@@ -964,13 +926,11 @@ function limparJobsAntigos() {
   }
 }
 
-// Limpeza periódica dos resultados e páginas expirados.
 const intervaloLimpeza = setInterval(
   limparJobsAntigos,
   5 * 60 * 1000
 );
 
-// Não manter o processo Node ativo apenas por causa deste timer.
 if (typeof intervaloLimpeza.unref === 'function') {
   intervaloLimpeza.unref();
 }
@@ -1054,10 +1014,7 @@ async function startPncpSearch(req, res) {
           : req.body.modalidade,
     });
 
-    // Criamos as etapas antes de responder para detectar falhas
-    // ao carregar a lista de modalidades ativas.
     const etapas = await criarEtapas(filtros);
-
     const id = crypto.randomUUID();
 
     const job = {
@@ -1077,7 +1034,6 @@ async function startPncpSearch(req, res) {
     };
 
     jobs.set(id, job);
-
     adicionarNaFila(job);
 
     return res.status(202).json({
