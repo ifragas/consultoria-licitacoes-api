@@ -1,4 +1,3 @@
-
 const axios = require('axios');
 const crypto = require('crypto');
 
@@ -20,8 +19,6 @@ const MAX_PAGINAS_CONSULTA = 1000;
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const JOB_RETENTION_MS = 30 * 60 * 1000;
 const TIMEOUT_REQUISICAO_MS = 30_000;
-
-// Ative/desative os diagnósticos pelo Render.
 const DEBUG_PNCP = process.env.DEBUG_PNCP !== 'false';
 
 // ============================================================
@@ -66,9 +63,7 @@ function normalizarData(data) {
 
   const valor = String(data).trim();
 
-  if (/^\d{8}$/.test(valor)) {
-    return valor;
-  }
+  if (/^\d{8}$/.test(valor)) return valor;
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(valor)) {
     return valor.replace(/-/g, '');
@@ -100,13 +95,12 @@ function validarData(data) {
 }
 
 function dataHojeFormatoPncp() {
+  // Usa a data local do servidor, como no controlador anterior.
   const agora = new Date();
 
-  const ano = agora.getFullYear();
-  const mes = String(agora.getMonth() + 1).padStart(2, '0');
-  const dia = String(agora.getDate()).padStart(2, '0');
-
-  return `${ano}${mes}${dia}`;
+  return `${agora.getFullYear()}${String(
+    agora.getMonth() + 1
+  ).padStart(2, '0')}${String(agora.getDate()).padStart(2, '0')}`;
 }
 
 function dataDiasAntesFormatoPncp(dataBase, dias) {
@@ -115,13 +109,46 @@ function dataDiasAntesFormatoPncp(dataBase, dias) {
   const dia = Number(dataBase.slice(6, 8));
 
   const data = new Date(Date.UTC(ano, mes - 1, dia));
+
   data.setUTCDate(data.getUTCDate() - dias);
 
-  const anoResultado = data.getUTCFullYear();
-  const mesResultado = String(data.getUTCMonth() + 1).padStart(2, '0');
-  const diaResultado = String(data.getUTCDate()).padStart(2, '0');
+  return `${data.getUTCFullYear()}${String(
+    data.getUTCMonth() + 1
+  ).padStart(2, '0')}${String(data.getUTCDate()).padStart(2, '0')}`;
+}
 
-  return `${anoResultado}${mesResultado}${diaResultado}`;
+function obterModalidades(entrada = {}) {
+  let valores = entrada.modalidades;
+
+  if (valores === undefined || valores === null) {
+    valores =
+      entrada.modalidade !== undefined &&
+      entrada.modalidade !== null &&
+      entrada.modalidade !== ''
+        ? [entrada.modalidade]
+        : [];
+  }
+
+  if (typeof valores === 'string') {
+    valores = valores
+      .split(',')
+      .map((valor) => valor.trim())
+      .filter(Boolean);
+  }
+
+  if (!Array.isArray(valores)) {
+    valores = [valores];
+  }
+
+  return [
+    ...new Set(
+      valores
+        .map((valor) => Number(valor))
+        .filter(
+          (valor) => Number.isInteger(valor) && valor > 0
+        )
+    ),
+  ];
 }
 
 function obterFiltros(entrada = {}) {
@@ -177,47 +204,13 @@ function obterFiltros(entrada = {}) {
     );
   }
 
-  const modalidades = obterModalidades(entrada);
-
   return {
     dataInicial,
     dataFinal,
     uf,
-    modalidades,
+    modalidades: obterModalidades(entrada),
     termo: String(entrada.termo || '').trim(),
   };
-}
-
-function obterModalidades(entrada = {}) {
-  let valores = entrada.modalidades;
-
-  if (valores === undefined || valores === null) {
-    valores =
-      entrada.modalidade !== undefined &&
-      entrada.modalidade !== null &&
-      entrada.modalidade !== ''
-        ? [entrada.modalidade]
-        : [];
-  }
-
-  if (typeof valores === 'string') {
-    valores = valores
-      .split(',')
-      .map((valor) => valor.trim())
-      .filter(Boolean);
-  }
-
-  if (!Array.isArray(valores)) {
-    valores = [valores];
-  }
-
-  return [
-    ...new Set(
-      valores
-        .map((valor) => Number(valor))
-        .filter((valor) => Number.isInteger(valor) && valor > 0)
-    ),
-  ];
 }
 
 function extrairRegistros(resposta) {
@@ -225,12 +218,15 @@ function extrairRegistros(resposta) {
   if (Array.isArray(resposta?.data)) return resposta.data;
   if (Array.isArray(resposta?.items)) return resposta.items;
   if (Array.isArray(resposta?.content)) return resposta.content;
+  if (Array.isArray(resposta?.data?.content)) {
+    return resposta.data.content;
+  }
 
   return [];
 }
 
 function extrairTotalPaginas(resposta) {
-  const possiveisValores = [
+  const valores = [
     resposta?.totalPaginas,
     resposta?.totalPages,
     resposta?.total_pages,
@@ -238,7 +234,7 @@ function extrairTotalPaginas(resposta) {
     resposta?.paginacao?.totalPaginas,
   ];
 
-  for (const valor of possiveisValores) {
+  for (const valor of valores) {
     const numero = Number(valor);
 
     if (Number.isInteger(numero) && numero >= 0) {
@@ -292,8 +288,9 @@ function obterTextoPesquisa(item) {
 function correspondeAoTermo(item, termo) {
   if (!termo) return true;
 
-  return normalizarTexto(obterTextoPesquisa(item))
-    .includes(normalizarTexto(termo));
+  return normalizarTexto(obterTextoPesquisa(item)).includes(
+    normalizarTexto(termo)
+  );
 }
 
 function obterRetryAfterMs(headers = {}) {
@@ -308,7 +305,10 @@ function obterRetryAfterMs(headers = {}) {
   const segundos = Number(valor);
 
   if (Number.isFinite(segundos) && segundos >= 0) {
-    return Math.max(ESPERA_RATE_LIMIT_MS, segundos * 1000);
+    return Math.max(
+      ESPERA_RATE_LIMIT_MS,
+      segundos * 1000
+    );
   }
 
   const dataRetry = Date.parse(String(valor));
@@ -325,8 +325,11 @@ function obterRetryAfterMs(headers = {}) {
 
 function criarErroHttp(mensagem, status, detalhes = {}) {
   const erro = new Error(mensagem);
+
   erro.status = status;
+
   Object.assign(erro, detalhes);
+
   return erro;
 }
 
@@ -355,26 +358,30 @@ function salvarCache(chave, valor) {
 }
 
 async function respeitarLimitePncp() {
-  const tempoBloqueado = bloqueioPncpAte - Date.now();
+  let espera = Math.max(
+    0,
+    bloqueioPncpAte - Date.now()
+  );
 
-  if (tempoBloqueado > 0) {
-    await dormir(tempoBloqueado);
+  if (espera > 0) {
+    await dormir(espera);
   }
 
-  const tempoDesdeUltimaRequisicao =
-    Date.now() - ultimaRequisicaoPncp;
+  espera =
+    INTERVALO_REQUISICOES_MS -
+    (Date.now() - ultimaRequisicaoPncp);
 
-  const tempoRestante =
-    INTERVALO_REQUISICOES_MS - tempoDesdeUltimaRequisicao;
-
-  if (tempoRestante > 0) {
-    await dormir(tempoRestante);
+  if (espera > 0) {
+    await dormir(espera);
   }
 
-  const bloqueioRestante = bloqueioPncpAte - Date.now();
+  espera = Math.max(
+    0,
+    bloqueioPncpAte - Date.now()
+  );
 
-  if (bloqueioRestante > 0) {
-    await dormir(bloqueioRestante);
+  if (espera > 0) {
+    await dormir(espera);
   }
 
   ultimaRequisicaoPncp = Date.now();
@@ -382,11 +389,17 @@ async function respeitarLimitePncp() {
 
 function executarNaFilaPncp(funcao) {
   const execucao = filaPncp.then(funcao, funcao);
+
   filaPncp = execucao.catch(() => {});
+
   return execucao;
 }
 
-async function requisitarPncp(url, parametros = {}, opcoes = {}) {
+async function requisitarPncp(
+  url,
+  parametros = {},
+  opcoes = {}
+) {
   const chaveCache = JSON.stringify({
     url,
     parametros,
@@ -456,12 +469,17 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
             Date.now() + esperaMs
           );
 
-          console.warn('[PNCP][429] Limite de requisições atingido.', {
-            endpoint: url,
-            parametros,
-            tentativa,
-            esperaSegundos: Math.ceil(esperaMs / 1000),
-          });
+          console.warn(
+            '[PNCP][429] Limite de requisições atingido.',
+            {
+              endpoint: url,
+              parametros,
+              tentativa,
+              esperaSegundos: Math.ceil(
+                esperaMs / 1000
+              ),
+            }
+          );
 
           throw criarErroHttp(
             `O PNCP limitou as requisições. Nova tentativa em aproximadamente ${Math.ceil(
@@ -472,7 +490,10 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
           );
         }
 
-        if (resposta.status < 200 || resposta.status >= 300) {
+        if (
+          resposta.status < 200 ||
+          resposta.status >= 300
+        ) {
           logDebug('RESPOSTA HTTP COM ERRO', {
             endpoint: url,
             status: resposta.status,
@@ -492,8 +513,10 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
           formatoData: Array.isArray(resposta.data?.data)
             ? 'data é array'
             : typeof resposta.data?.data,
-          totalRegistrosInformado: resposta.data?.totalRegistros,
-          totalPaginasInformado: resposta.data?.totalPaginas,
+          totalRegistrosInformado:
+            resposta.data?.totalRegistros,
+          totalPaginasInformado:
+            resposta.data?.totalPaginas,
           quantidadeData: Array.isArray(resposta.data?.data)
             ? resposta.data.data.length
             : null,
@@ -505,11 +528,15 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
       } catch (erro) {
         ultimaFalha = erro;
 
-        if (erro.status === 429 || erro.response?.status === 429) {
+        if (
+          erro.status === 429 ||
+          erro.response?.status === 429
+        ) {
           throw erro;
         }
 
-        const status = erro.status || erro.response?.status;
+        const status =
+          erro.status || erro.response?.status;
 
         if (
           status >= 400 &&
@@ -520,12 +547,17 @@ async function requisitarPncp(url, parametros = {}, opcoes = {}) {
         }
 
         if (tentativa < MAX_TENTATIVAS) {
-          await dormir(Math.min(2000 * tentativa, 10_000));
+          await dormir(
+            Math.min(2000 * tentativa, 10_000)
+          );
         }
       }
     }
 
-    throw ultimaFalha || new Error('Falha ao consultar o PNCP.');
+    throw (
+      ultimaFalha ||
+      new Error('Falha ao consultar o PNCP.')
+    );
   });
 }
 
@@ -541,9 +573,14 @@ async function obterTodasModalidadesAtivas() {
 
   if (
     cacheModalidades &&
-    Date.now() - cacheModalidadesCriadoEm < validadeCache
+    Date.now() - cacheModalidadesCriadoEm <
+      validadeCache
   ) {
-    logDebug('Utilizando cache de modalidades', cacheModalidades);
+    logDebug(
+      'Utilizando cache de modalidades',
+      cacheModalidades
+    );
+
     return cacheModalidades;
   }
 
@@ -553,13 +590,6 @@ async function obterTodasModalidadesAtivas() {
   );
 
   let registros = extrairRegistros(resposta);
-
-  if (
-    registros.length === 0 &&
-    Array.isArray(resposta?.data?.content)
-  ) {
-    registros = resposta.data.content;
-  }
 
   logDebug('Resposta de modalidades', {
     quantidadeRegistros: registros.length,
@@ -572,21 +602,25 @@ async function obterTodasModalidadesAtivas() {
       registros
         .filter((item) => item?.statusAtivo !== false)
         .map((item) => Number(item?.id))
-        .filter((id) => Number.isInteger(id) && id > 0)
+        .filter(
+          (id) => Number.isInteger(id) && id > 0
+        )
     ),
   ];
 
   if (modalidades.length === 0) {
     throw new Error(
-      'Não foi possível obter as modalidades ativas do PNCP. ' +
-      'Tente novamente ou selecione modalidades específicas.'
+      'Não foi possível obter as modalidades ativas do PNCP. Tente novamente ou selecione modalidades específicas.'
     );
   }
 
   cacheModalidades = modalidades;
   cacheModalidadesCriadoEm = Date.now();
 
-  logDebug('Modalidades ativas carregadas', modalidades);
+  logDebug(
+    'Modalidades ativas carregadas',
+    modalidades
+  );
 
   return modalidades;
 }
@@ -598,18 +632,25 @@ async function obterTodasModalidadesAtivas() {
 async function criarEtapas(filtros) {
   const etapas = [];
 
-  etapas.push({
-    fonte: 'proposta',
-    modalidade: null,
-    pagina: 1,
-    totalPaginas: null,
-    concluida: false,
-  });
-
   const modalidades =
     filtros.modalidades.length > 0
       ? filtros.modalidades
       : await obterTodasModalidadesAtivas();
+
+  // Uma etapa por modalidade para cada fonte.
+  // Assim, a modalidade selecionada não é ignorada
+  // na fonte de propostas.
+  for (const modalidade of modalidades) {
+    etapas.push({
+      fonte: 'proposta',
+      modalidade,
+      pagina: 1,
+      totalPaginas: null,
+      concluida: false,
+      registrosRecebidos: 0,
+      totalResultadosFonte: 0,
+    });
+  }
 
   for (const modalidade of modalidades) {
     etapas.push({
@@ -618,6 +659,8 @@ async function criarEtapas(filtros) {
       pagina: 1,
       totalPaginas: null,
       concluida: false,
+      registrosRecebidos: 0,
+      totalResultadosFonte: 0,
     });
   }
 
@@ -627,9 +670,12 @@ async function criarEtapas(filtros) {
     uf: filtros.uf || '(todas)',
     termo: filtros.termo || '(nenhum)',
     modalidadesSelecionadas: filtros.modalidades,
+    modalidadesConsultadas: modalidades,
     quantidadeEtapas: etapas.length,
     fontes: etapas.reduce((acc, etapa) => {
-      acc[etapa.fonte] = (acc[etapa.fonte] || 0) + 1;
+      acc[etapa.fonte] =
+        (acc[etapa.fonte] || 0) + 1;
+
       return acc;
     }, {}),
   });
@@ -641,26 +687,18 @@ function montarParametros(etapa, filtros) {
   const parametros = {
     pagina: etapa.pagina,
     tamanhoPagina: TAMANHO_PAGINA,
+    codigoModalidadeContratacao: etapa.modalidade,
   };
 
   if (etapa.fonte === 'proposta') {
+    // O endpoint de propostas utiliza dataFinal.
+    // A data inicial não é enviada porque o endpoint
+    // possui semântica própria para propostas.
     parametros.dataFinal = filtros.dataFinal;
-
-    if (etapa.modalidade) {
-      parametros.codigoModalidadeContratacao =
-        etapa.modalidade;
-    }
-
-    if (filtros.uf) {
-      parametros.uf = filtros.uf;
-    }
-
-    return parametros;
+  } else {
+    parametros.dataInicial = filtros.dataInicial;
+    parametros.dataFinal = filtros.dataFinal;
   }
-
-  parametros.dataInicial = filtros.dataInicial;
-  parametros.dataFinal = filtros.dataFinal;
-  parametros.codigoModalidadeContratacao = etapa.modalidade;
 
   if (filtros.uf) {
     parametros.uf = filtros.uf;
@@ -675,7 +713,10 @@ async function consultarEtapa(etapa, filtros) {
       ? URL_PROPOSTA
       : URL_PUBLICACAO;
 
-  const parametros = montarParametros(etapa, filtros);
+  const parametros = montarParametros(
+    etapa,
+    filtros
+  );
 
   return requisitarPncp(url, parametros);
 }
@@ -684,15 +725,24 @@ async function consultarEtapa(etapa, filtros) {
 // RESULTADOS E PROGRESSO
 // ============================================================
 
-function adicionarResultados(job, registros) {
+function adicionarResultados(job, registros, etapa) {
   let correspondentesAoTermo = 0;
   let novosResultados = 0;
   let duplicados = 0;
 
-  for (const item of registros) {
-    if (!item || typeof item !== 'object') continue;
+  etapa.registrosRecebidos += registros.length;
 
-    if (!correspondeAoTermo(item, job.filtros.termo)) {
+  for (const item of registros) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+
+    if (
+      !correspondeAoTermo(
+        item,
+        job.filtros.termo
+      )
+    ) {
       continue;
     }
 
@@ -708,6 +758,9 @@ function adicionarResultados(job, registros) {
       duplicados += 1;
     }
   }
+
+  etapa.totalResultadosFonte +=
+    correspondentesAoTermo;
 
   return {
     registrosRecebidos: registros.length,
@@ -727,15 +780,18 @@ function calcularProgresso(job) {
   for (const etapa of job.etapas) {
     const estimadas =
       etapa.totalPaginas ||
-      (etapa.concluida ? etapa.pagina - 1 : etapa.pagina);
+      (etapa.concluida
+        ? Math.max(1, etapa.pagina - 1)
+        : etapa.pagina);
 
-    totalPaginasEstimadas += Math.max(1, estimadas);
+    totalPaginasEstimadas += Math.max(
+      1,
+      estimadas
+    );
 
-    if (etapa.concluida) {
-      paginasConcluidas += Math.max(1, etapa.pagina - 1);
-    } else {
-      paginasConcluidas += Math.max(0, etapa.pagina - 1);
-    }
+    paginasConcluidas += etapa.concluida
+      ? Math.max(1, etapa.pagina - 1)
+      : Math.max(0, etapa.pagina - 1);
   }
 
   if (totalPaginasEstimadas === 0) return 0;
@@ -743,29 +799,36 @@ function calcularProgresso(job) {
   return Math.min(
     99,
     Math.floor(
-      (paginasConcluidas / totalPaginasEstimadas) * 100
+      (paginasConcluidas /
+        totalPaginasEstimadas) *
+        100
     )
   );
 }
 
 function contarPaginasConcluidas(job) {
   return job.etapas.reduce(
-    (total, etapa) => total + Math.max(0, etapa.pagina - 1),
+    (total, etapa) =>
+      total + Math.max(0, etapa.pagina - 1),
     0
   );
 }
 
 function contarPaginasEstimadas(job) {
-  return job.etapas.reduce((total, etapa) => {
-    return total + (
-      etapa.totalPaginas ||
-      (etapa.concluida ? etapa.pagina - 1 : etapa.pagina)
-    );
-  }, 0);
+  return job.etapas.reduce(
+    (total, etapa) =>
+      total +
+      (etapa.totalPaginas ||
+        (etapa.concluida
+          ? Math.max(1, etapa.pagina - 1)
+          : etapa.pagina)),
+    0
+  );
 }
 
 function serializarJob(job) {
-  const etapaAtual = job.etapas[job.etapaAtual] || null;
+  const etapaAtual =
+    job.etapas[job.etapaAtual] || null;
 
   return {
     id: job.id,
@@ -774,16 +837,21 @@ function serializarJob(job) {
       job.status === 'completed'
         ? 100
         : calcularProgresso(job),
-    paginasConcluidas: contarPaginasConcluidas(job),
-    paginasEstimadas: contarPaginasEstimadas(job),
+    paginasConcluidas:
+      contarPaginasConcluidas(job),
+    paginasEstimadas:
+      contarPaginasEstimadas(job),
     totalResultados: job.resultados.length,
     data: job.resultados,
     erro: job.erro,
     proximaTentativaEm: job.proximaTentativaEm
-      ? new Date(job.proximaTentativaEm).toISOString()
+      ? new Date(
+          job.proximaTentativaEm
+        ).toISOString()
       : null,
     modalidades: job.filtros.modalidades,
-    todasModalidades: job.filtros.modalidades.length === 0,
+    todasModalidades:
+      job.filtros.modalidades.length === 0,
     etapaAtual: etapaAtual
       ? {
           fonte: etapaAtual.fonte,
@@ -792,6 +860,7 @@ function serializarJob(job) {
           totalPaginas: etapaAtual.totalPaginas,
         }
       : null,
+    resumoFontes: job.resumoFontes || null,
   };
 }
 
@@ -800,7 +869,11 @@ function serializarJob(job) {
 // ============================================================
 
 function removerJobDaFila(jobId) {
-  for (let i = filaJobs.length - 1; i >= 0; i -= 1) {
+  for (
+    let i = filaJobs.length - 1;
+    i >= 0;
+    i -= 1
+  ) {
     if (filaJobs[i] === jobId) {
       filaJobs.splice(i, 1);
     }
@@ -809,9 +882,11 @@ function removerJobDaFila(jobId) {
 
 function adicionarNaFila(job) {
   if (
-    job.status === 'completed' ||
-    job.status === 'failed' ||
-    job.status === 'cancelled'
+    [
+      'completed',
+      'failed',
+      'cancelled',
+    ].includes(job.status)
   ) {
     return;
   }
@@ -838,19 +913,26 @@ function finalizarJob(job, status, erro = null) {
 function agendarRetomada(job, esperaMs, erro) {
   job.status = 'paused';
   job.erro = erro.message;
-  job.proximaTentativaEm = Date.now() + esperaMs;
+  job.proximaTentativaEm =
+    Date.now() + esperaMs;
   job.atualizadoEm = Date.now();
   job.naFila = false;
 
   console.warn(
-    `[PNCP] Pesquisa ${job.id} pausada por limite de requisições. ` +
-    `Retomada prevista em ${Math.ceil(esperaMs / 1000)} segundos.`
+    `[PNCP] Pesquisa ${job.id} pausada por limite de requisições. Retomada prevista em ${Math.ceil(
+      esperaMs / 1000
+    )} segundos.`
   );
 
   setTimeout(() => {
     const jobAtual = jobs.get(job.id);
 
-    if (!jobAtual || jobAtual.status !== 'paused') return;
+    if (
+      !jobAtual ||
+      jobAtual.status !== 'paused'
+    ) {
+      return;
+    }
 
     jobAtual.erro = null;
     jobAtual.proximaTentativaEm = null;
@@ -876,14 +958,18 @@ async function processarJob(job) {
 
   try {
     while (job.etapaAtual < job.etapas.length) {
-      const etapa = job.etapas[job.etapaAtual];
+      const etapa =
+        job.etapas[job.etapaAtual];
 
       if (etapa.concluida) {
         job.etapaAtual += 1;
         continue;
       }
 
-      if (etapa.pagina > MAX_PAGINAS_CONSULTA) {
+      if (
+        etapa.pagina >
+        MAX_PAGINAS_CONSULTA
+      ) {
         throw new Error(
           `A etapa excedeu o limite de ${MAX_PAGINAS_CONSULTA} páginas.`
         );
@@ -891,7 +977,10 @@ async function processarJob(job) {
 
       job.atualizadoEm = Date.now();
 
-      const parametros = montarParametros(etapa, job.filtros);
+      const parametros = montarParametros(
+        etapa,
+        job.filtros
+      );
 
       logDebug('Processando etapa', {
         jobId: job.id,
@@ -903,11 +992,21 @@ async function processarJob(job) {
         parametros,
       });
 
-      const resposta = await consultarEtapa(etapa, job.filtros);
-      const registros = extrairRegistros(resposta);
-      const totalPaginas = extrairTotalPaginas(resposta);
+      const resposta = await consultarEtapa(
+        etapa,
+        job.filtros
+      );
 
-      const resumoResultados = adicionarResultados(job, registros);
+      const registros = extrairRegistros(resposta);
+      const totalPaginas =
+        extrairTotalPaginas(resposta);
+
+      const resumoResultados =
+        adicionarResultados(
+          job,
+          registros,
+          etapa
+        );
 
       if (totalPaginas !== null) {
         etapa.totalPaginas = totalPaginas;
@@ -920,10 +1019,12 @@ async function processarJob(job) {
         pagina: etapa.pagina,
         dataInicial: parametros.dataInicial || null,
         dataFinal: parametros.dataFinal || null,
-        totalRegistrosInformado: resposta?.totalRegistros ?? null,
+        totalRegistrosInformado:
+          resposta?.totalRegistros ?? null,
         totalPaginasInformado: totalPaginas,
         ...resumoResultados,
-        termoAplicado: job.filtros.termo || '(nenhum)',
+        termoAplicado:
+          job.filtros.termo || '(nenhum)',
       });
 
       const temMaisPaginas =
@@ -933,7 +1034,10 @@ async function processarJob(job) {
 
       job.atualizadoEm = Date.now();
 
-      if (!temMaisPaginas || registros.length === 0) {
+      if (
+        !temMaisPaginas ||
+        registros.length === 0
+      ) {
         etapa.concluida = true;
 
         logDebug('Etapa concluída', {
@@ -943,6 +1047,8 @@ async function processarJob(job) {
           pagina: etapa.pagina,
           registrosNaPagina: registros.length,
           totalPaginas: etapa.totalPaginas,
+          totalRegistrosFonte:
+            etapa.totalResultadosFonte,
         });
 
         job.etapaAtual += 1;
@@ -951,11 +1057,60 @@ async function processarJob(job) {
       }
     }
 
+    job.resumoFontes = job.etapas.reduce(
+      (acc, etapa) => {
+        if (!acc[etapa.fonte]) {
+          acc[etapa.fonte] = {
+            etapas: 0,
+            paginasConsultadas: 0,
+            registrosRecebidos: 0,
+            resultadosCorrespondentes: 0,
+            paginasInformadasPelaApi: 0,
+            etapasSemResultados: 0,
+          };
+        }
+
+        acc[etapa.fonte].etapas += 1;
+
+        acc[
+          etapa.fonte
+        ].paginasConsultadas +=
+          etapa.pagina > 0
+            ? etapa.concluida
+              ? etapa.pagina
+              : etapa.pagina - 1
+            : 0;
+
+        acc[
+          etapa.fonte
+        ].registrosRecebidos +=
+          etapa.registrosRecebidos;
+
+        acc[
+          etapa.fonte
+        ].resultadosCorrespondentes +=
+          etapa.totalResultadosFonte;
+
+        acc[
+          etapa.fonte
+        ].paginasInformadasPelaApi +=
+          etapa.totalPaginas || 0;
+
+        if (etapa.totalResultadosFonte === 0) {
+          acc[
+            etapa.fonte
+          ].etapasSemResultados += 1;
+        }
+
+        return acc;
+      },
+      {}
+    );
+
     finalizarJob(job, 'completed');
 
     console.info(
-      `[PNCP] Pesquisa ${job.id} concluída. ` +
-      `${job.resultados.length} resultado(s).`
+      `[PNCP] Pesquisa ${job.id} concluída. ${job.resultados.length} resultado(s).`
     );
 
     logDebug('Resumo final da pesquisa', {
@@ -963,27 +1118,43 @@ async function processarJob(job) {
       status: job.status,
       totalResultados: job.resultados.length,
       quantidadeEtapas: job.etapas.length,
-      fontesConsultadas: job.etapas.reduce((acc, etapa) => {
-        acc[etapa.fonte] = (acc[etapa.fonte] || 0) + 1;
-        return acc;
-      }, {}),
-      etapasSemResultados: job.etapas.filter(
-        (etapa) => etapa.concluida
-      ).length,
+      fontesConsultadas: job.etapas.reduce(
+        (acc, etapa) => {
+          acc[etapa.fonte] =
+            (acc[etapa.fonte] || 0) + 1;
+
+          return acc;
+        },
+        {}
+      ),
+      etapasSemResultados:
+        job.etapas.filter(
+          (etapa) =>
+            etapa.concluida &&
+            etapa.totalResultadosFonte === 0
+        ).length,
+      resumoFontes: job.resumoFontes,
     });
   } catch (erro) {
-    if (erro.status === 429 || erro.response?.status === 429) {
-      const esperaMs =
-        erro.retryAfterMs || ESPERA_RATE_LIMIT_MS;
+    if (
+      erro.status === 429 ||
+      erro.response?.status === 429
+    ) {
+      agendarRetomada(
+        job,
+        erro.retryAfterMs ||
+          ESPERA_RATE_LIMIT_MS,
+        erro
+      );
 
-      agendarRetomada(job, esperaMs, erro);
       return;
     }
 
     finalizarJob(
       job,
       'failed',
-      erro.message || 'Erro desconhecido ao consultar o PNCP.'
+      erro.message ||
+        'Erro desconhecido ao consultar o PNCP.'
     );
 
     console.error(
@@ -1008,10 +1179,12 @@ async function processarFilaJobs() {
       job.naFila = false;
 
       if (
-        job.status === 'completed' ||
-        job.status === 'failed' ||
-        job.status === 'cancelled' ||
-        job.status === 'paused'
+        [
+          'completed',
+          'failed',
+          'cancelled',
+          'paused',
+        ].includes(job.status)
       ) {
         continue;
       }
@@ -1033,15 +1206,22 @@ function limparJobsAntigos() {
   for (const [id, job] of jobs.entries()) {
     if (
       job.finalizadoEm &&
-      agora - job.finalizadoEm > JOB_RETENTION_MS
+      agora - job.finalizadoEm >
+        JOB_RETENTION_MS
     ) {
       jobs.delete(id);
       removerJobDaFila(id);
     }
   }
 
-  for (const [chave, registro] of cachePaginas.entries()) {
-    if (agora - registro.criadoEm > CACHE_TTL_MS) {
+  for (
+    const [chave, registro]
+    of cachePaginas.entries()
+  ) {
+    if (
+      agora - registro.criadoEm >
+      CACHE_TTL_MS
+    ) {
       cachePaginas.delete(chave);
     }
   }
@@ -1052,7 +1232,9 @@ const intervaloLimpeza = setInterval(
   5 * 60 * 1000
 );
 
-if (typeof intervaloLimpeza.unref === 'function') {
+if (
+  typeof intervaloLimpeza.unref === 'function'
+) {
   intervaloLimpeza.unref();
 }
 
@@ -1092,31 +1274,42 @@ async function searchPncpBids(req, res) {
       pagina,
     });
 
-    const resposta = await consultarEtapa(etapa, filtros);
-    const registrosBrutos = extrairRegistros(resposta);
+    const resposta = await consultarEtapa(
+      etapa,
+      filtros
+    );
 
-    const registros = registrosBrutos.filter((item) =>
-      correspondeAoTermo(item, filtros.termo)
+    const registrosBrutos =
+      extrairRegistros(resposta);
+
+    const registros = registrosBrutos.filter(
+      (item) =>
+        correspondeAoTermo(
+          item,
+          filtros.termo
+        )
     );
 
     logDebug('Resultado da pesquisa direta', {
       registrosBrutos: registrosBrutos.length,
       registrosApósFiltro: registros.length,
-      totalRegistrosInformado: resposta?.totalRegistros ?? null,
-      totalPaginas: extrairTotalPaginas(resposta),
+      totalRegistrosInformado:
+        resposta?.totalRegistros ?? null,
+      totalPaginas:
+        extrairTotalPaginas(resposta),
       termo: filtros.termo || '(nenhum)',
     });
 
     return res.json({
       data: registros,
       pagina,
-      totalPaginas: extrairTotalPaginas(resposta),
+      totalPaginas:
+        extrairTotalPaginas(resposta),
       totalResultados: registros.length,
       fonte: 'proposta',
       aviso:
         filtros.modalidades.length > 1
-          ? 'A pesquisa direta consulta apenas a fonte de propostas e não combina todas as modalidades. ' +
-            'Use POST /api/pncp/search/jobs para uma pesquisa completa.'
+          ? 'A pesquisa direta consulta uma modalidade por requisição. Use POST /api/pncp/search/jobs para combinar todas as modalidades e fontes.'
           : null,
     });
   } catch (erro) {
@@ -1126,9 +1319,12 @@ async function searchPncpBids(req, res) {
       500;
 
     return res.status(status).json({
-      erro: erro.message || 'Erro ao consultar o PNCP.',
+      erro:
+        erro.message ||
+        'Erro ao consultar o PNCP.',
       status,
-      retryAfterMs: erro.retryAfterMs || null,
+      retryAfterMs:
+        erro.retryAfterMs || null,
     });
   }
 }
@@ -1165,6 +1361,7 @@ async function startPncpSearch(req, res) {
       atualizadoEm: Date.now(),
       finalizadoEm: null,
       naFila: false,
+      resumoFontes: null,
     };
 
     jobs.set(id, job);
@@ -1186,10 +1383,15 @@ async function startPncpSearch(req, res) {
       ...serializarJob(job),
     });
   } catch (erro) {
-    console.error('[PNCP] Erro ao iniciar pesquisa:', erro.message);
+    console.error(
+      '[PNCP] Erro ao iniciar pesquisa:',
+      erro.message
+    );
 
     return res.status(400).json({
-      erro: erro.message || 'Não foi possível iniciar a pesquisa.',
+      erro:
+        erro.message ||
+        'Não foi possível iniciar a pesquisa.',
     });
   }
 }
