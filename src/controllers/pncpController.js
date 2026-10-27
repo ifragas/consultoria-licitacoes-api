@@ -1,8 +1,8 @@
 // controllers/pncpController.js
 const axios = require('axios');
 
-// Função para remover acentos e padronizar textos para comparação
-const removerAcentos = (str) => {
+// Remove acentos e converte para minúsculas
+const normalizarTexto = (str) => {
   if (!str) return '';
   return str
     .normalize('NFD')
@@ -28,16 +28,12 @@ const searchPncpBids = async (req, res) => {
       dataFinal: formatarData(hoje),
       codigoModalidadeContratacao: modalidade ? Number(modalidade) : 6,
       pagina: Number(pagina),
-      tamanhoPagina: 50, // Mantido em 50 para garantir estabilidade e evitar erros na API do governo
+      tamanhoPagina: 50,
     };
-
-    // Envia a palavra-chave no parâmetro 'q' aceito pela API pública
-    if (termo && termo.trim() !== '') {
-      params.q = termo.trim();
-    }
 
     if (uf) params.uf = uf.toUpperCase();
 
+    // Fazemos a chamada estável sem o parâmetro 'q' direto na URL para evitar incompatibilidade da API pública
     const response = await axios.get(baseUrl, {
       params,
       headers: {
@@ -48,15 +44,15 @@ const searchPncpBids = async (req, res) => {
 
     let dataResult = response.data;
 
-    // Refinamento de garantia no Node.js (insensível a acentos)
+    // Se o usuário digitou uma palavra-chave, filtramos os resultados localmente no Node.js
     if (termo && termo.trim() !== '' && Array.isArray(dataResult.data)) {
-      const termoNormalizado = removerAcentos(termo.trim());
+      const termoBusca = normalizarTexto(termo.trim());
 
       const resultadosFiltrados = dataResult.data.filter((item) => {
-        const objetoNormalizado = removerAcentos(item.objetoCompra);
-        const orgaoNormalizado = removerAcentos(item.orgaoEntidade?.razaoSocial);
+        const objeto = normalizarTexto(item.objetoCompra);
+        const orgao = normalizarTexto(item.orgaoEntidade?.razaoSocial);
 
-        return objetoNormalizado.includes(termoNormalizado) || orgaoNormalizado.includes(termoNormalizado);
+        return objeto.includes(termoBusca) || orgao.includes(termoBusca);
       });
 
       dataResult.data = resultadosFiltrados;
