@@ -15,6 +15,7 @@ const documentRoutes = require('./routes/documentRoutes');
 const scheduleRoutes = require('./routes/scheduleRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const bidRoutes = require('./routes/bidRoutes');
+const pncpRoutes = require('./routes/pncpRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,6 +34,7 @@ app.use('/documents', documentRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/bids', bidRoutes);
+app.use('/api/pncp', pncpRoutes);
 
 // Inicialização da aplicação
 async function startServer() {
@@ -44,29 +46,6 @@ async function startServer() {
       console.log(`🚀 Servidor a correr na porta ${PORT}`);
     });
 
-    // TESTE TEMPORÁRIO DOS LEMBRETES
-    // Executa uma verificação ao iniciar a API.
-    if (process.env.TEST_EMAIL_REMINDERS === 'true') {
-      console.log(
-        '[GESTORAE TESTE] Iniciando verificação manual dos lembretes...'
-      );
-
-      if (
-        !emailService ||
-        typeof emailService.processScheduledReminders !== 'function'
-      ) {
-        console.error(
-          '[GESTORAE TESTE] A função processScheduledReminders não foi exportada pelo emailService.js.'
-        );
-      } else {
-        emailService.processScheduledReminders().catch((error) => {
-          console.error(
-            '[GESTORAE TESTE] Erro na execução manual:',
-            error
-          );
-        });
-      }
-    }
   } catch (error) {
     console.error(
       '❌ Erro ao iniciar a API ou conectar ao MongoDB:',
