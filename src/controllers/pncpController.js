@@ -46,7 +46,7 @@ const searchPncpBids = async (req, res) => {
       dataFinal: dtFimFormatada,
       codigoModalidadeContratacao: modalidade ? Number(modalidade) : 6,
       pagina: Number(pagina),
-      tamanhoPagina: 50,
+      tamanhoPagina: 100,
     };
 
     if (uf) params.uf = uf.toUpperCase();
