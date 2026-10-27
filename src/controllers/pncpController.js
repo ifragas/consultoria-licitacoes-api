@@ -51,6 +51,9 @@ const searchPncpBids = async (req, res) => {
 
     if (uf) params.uf = uf.toUpperCase();
 
+    // ADICIONE ESTA LINHA AQUI:
+    console.log('Parâmetros exatos enviados ao PNCP:', params);
+
     const response = await axios.get(baseUrl, {
       params,
       headers: {
