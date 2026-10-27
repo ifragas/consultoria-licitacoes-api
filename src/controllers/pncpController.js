@@ -1,7 +1,6 @@
 // controllers/pncpController.js
 const axios = require('axios');
 
-// Remove acentos e converte para minúsculas
 const normalizarTexto = (str) => {
   if (!str) return '';
   return str
@@ -10,13 +9,29 @@ const normalizarTexto = (str) => {
     .toLowerCase();
 };
 
+// Função para extrair termos entre aspas e termos simples
+const extrairTermosDeBusca = (termoGeral) => {
+  const termos = [];
+  // Expressão regular para pegar texto entre aspas ou palavras separadas por vírgula
+  const regex = /"([^"]+)"|([^,]+)/g;
+  let match;
+
+  while ((match = regex.exec(termoGeral)) !== null) {
+    const termoEncontrado = match[1] || match[2];
+    if (termoEncontrado && termoEncontrado.trim()) {
+      termos.push(termoEncontrado.trim());
+    }
+  }
+
+  return termos;
+};
+
 const searchPncpBids = async (req, res) => {
   try {
     const { termo, uf, modalidade, pagina = 1 } = req.query;
 
     const baseUrl = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 
-    // Intervalo de busca (últimos 30 dias)
     const hoje = new Date();
     const trintaDiasAtras = new Date();
     trintaDiasAtras.setDate(hoje.getDate() - 30);
@@ -33,7 +48,6 @@ const searchPncpBids = async (req, res) => {
 
     if (uf) params.uf = uf.toUpperCase();
 
-    // Fazemos a chamada estável sem o parâmetro 'q' direto na URL para evitar incompatibilidade da API pública
     const response = await axios.get(baseUrl, {
       params,
       headers: {
@@ -44,15 +58,26 @@ const searchPncpBids = async (req, res) => {
 
     let dataResult = response.data;
 
-    // Se o usuário digitou uma palavra-chave, filtramos os resultados localmente no Node.js
     if (termo && termo.trim() !== '' && Array.isArray(dataResult.data)) {
-      const termoBusca = normalizarTexto(termo.trim());
+      const listaTermos = extrairTermosDeBusca(termo);
 
       const resultadosFiltrados = dataResult.data.filter((item) => {
-        const objeto = normalizarTexto(item.objetoCompra);
-        const orgao = normalizarTexto(item.orgaoEntidade?.razaoSocial);
+        const textoObjeto = normalizarTexto(item.objetoCompra);
+        const textoOrgao = normalizarTexto(item.orgaoEntidade?.razaoSocial);
+        const textoCompleto = `${textoObjeto} ${textoOrgao}`;
 
-        return objeto.includes(termoBusca) || orgao.includes(termoBusca);
+        // Verifica se pelo menos UM dos termos/expressões existe no texto
+        return listaTermos.some((termoItem) => {
+          // Trata coringas como % (ex: transporte%alunos -> engloba transporte de alunos)
+          const partesComCoringa = termoItem.split('%').map(p => normalizarTexto(p.trim())).filter(Boolean);
+
+          if (partesComCoringa.length > 1) {
+            return partesComCoringa.every(p => textoCompleto.includes(p));
+          }
+
+          const termoLimpo = normalizarTexto(termoItem);
+          return textoCompleto.includes(termoLimpo);
+        });
       });
 
       dataResult.data = resultadosFiltrados;

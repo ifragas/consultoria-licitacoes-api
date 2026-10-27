@@ -16,6 +16,7 @@ const scheduleRoutes = require('./routes/scheduleRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const bidRoutes = require('./routes/bidRoutes');
 const pncpRoutes = require('./routes/pncpRoutes');
+const savedSearchRoutes = require('./routes/savedSearchRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,6 +36,7 @@ app.use('/api/schedules', scheduleRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/bids', bidRoutes);
 app.use('/api/pncp', pncpRoutes);
+app.use('/api/saved-searches', savedSearchRoutes);
 
 // Inicialização da aplicação
 async function startServer() {
