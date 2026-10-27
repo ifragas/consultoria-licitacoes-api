@@ -28,7 +28,8 @@ const searchPncpBids = async (req, res) => {
   try {
     const { termo, uf, modalidade, pagina = 1, dataInicial, dataFinal } = req.query;
 
-    const baseUrl = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
+    // Alterado para o endpoint geral de contratações públicas para abranger o intervalo de datas completo
+    const baseUrl = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicas';
 
     const formatarData = (date) => date.toISOString().split('T')[0].replace(/-/g, '');
 
@@ -46,12 +47,11 @@ const searchPncpBids = async (req, res) => {
       dataFinal: dtFimFormatada,
       codigoModalidadeContratacao: modalidade ? Number(modalidade) : 6,
       pagina: Number(pagina),
-      tamanhoPagina: 50,
+      tamanhoPagina: 50, // Limite máximo aceito pelo PNCP
     };
 
     if (uf) params.uf = uf.toUpperCase();
 
-    // ADICIONE ESTA LINHA AQUI:
     console.log('Parâmetros exatos enviados ao PNCP:', params);
 
     const response = await axios.get(baseUrl, {
