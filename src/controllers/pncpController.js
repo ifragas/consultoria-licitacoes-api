@@ -53,15 +53,32 @@ const searchPncpBids = async (req, res) => {
 
     console.log('Parâmetros exatos enviados ao PNCP:', params);
 
-    const response = await axios.get(baseUrl, {
-      params,
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'accept': '*/*'
-      }
-    });
+   const response = await axios.get(baseUrl, {
+  params,
+  headers: {
+    'User-Agent': 'Mozilla/5.0',
+    accept: 'application/json'
+  },
+  timeout: 30000
+});
 
-    let dataResult = response.data;
+let dataResult = response.data;
+
+console.log('=== DIAGNÓSTICO PNCP ===');
+console.log('Período solicitado:', params.dataInicial, 'até', params.dataFinal);
+console.log('Status HTTP:', response.status);
+console.log('Total de registros:', dataResult.totalRegistros);
+console.log('Total de páginas:', dataResult.totalPaginas);
+console.log('Página retornada:', dataResult.numeroPagina);
+console.log(
+  'Datas de publicação dos primeiros registros:',
+  (dataResult.data || []).slice(0, 10).map(item => ({
+    numeroControlePNCP: item.numeroControlePNCP,
+    dataPublicacaoPncp: item.dataPublicacaoPncp,
+    objetoCompra: item.objetoCompra
+  }))
+);
+console.log('=== FIM DO DIAGNÓSTICO ===');
 
     if (termo && termo.trim() !== '' && Array.isArray(dataResult.data)) {
       const listaTermos = extrairTermosDeBusca(termo);
