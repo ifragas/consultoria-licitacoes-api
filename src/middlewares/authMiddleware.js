@@ -21,7 +21,18 @@ const verifyJWT = (req, res, next) => {
     if (err) {
       return res.status(403).json({ error: 'Access token inválido ou expirado!' });
     }
-    req.userId = decoded.id;
+
+    // Extrai o ID independentemente da chave gravada no token (id, userId, _id ou id interno)
+    const idExtraido = decoded.id || decoded.userId || decoded._id || (decoded.user && (decoded.user.id || decoded.user._id));
+
+    if (!idExtraido) {
+      return res.status(403).json({ error: 'Payload do token não contém um ID de usuário válido!' });
+    }
+
+    // Garante retrocompatibilidade com requisições antigas (req.userId) e novas (req.user.id)
+    req.userId = idExtraido;
+    req.user = { id: idExtraido };
+
     return next();
   });
 };
