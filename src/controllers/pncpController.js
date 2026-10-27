@@ -1,7 +1,7 @@
 // controllers/pncpController.js
 const axios = require('axios');
 
-// Função auxiliar para remover acentos e caracteres especiais para comparação
+// Função para remover acentos e padronizar textos para comparação
 const removerAcentos = (str) => {
   if (!str) return '';
   return str
@@ -23,17 +23,18 @@ const searchPncpBids = async (req, res) => {
 
     const formatarData = (date) => date.toISOString().split('T')[0].replace(/-/g, '');
 
-    // Se houver palavra-chave, buscamos mais registros (tamanhoPagina: 100) para filtrar localmente
-    const possuiTermo = termo && termo.trim() !== '';
-    const tamanhoPagina = possuiTermo ? 100 : 10;
-
     const params = {
       dataInicial: formatarData(trintaDiasAtras),
       dataFinal: formatarData(hoje),
       codigoModalidadeContratacao: modalidade ? Number(modalidade) : 6,
       pagina: Number(pagina),
-      tamanhoPagina: tamanhoPagina,
+      tamanhoPagina: 50, // Mantido em 50 para garantir estabilidade e evitar erros na API do governo
     };
+
+    // Envia a palavra-chave no parâmetro 'q' aceito pela API pública
+    if (termo && termo.trim() !== '') {
+      params.q = termo.trim();
+    }
 
     if (uf) params.uf = uf.toUpperCase();
 
@@ -47,21 +48,20 @@ const searchPncpBids = async (req, res) => {
 
     let dataResult = response.data;
 
-    // Filtro tolerante a acentos e maiúsculas/minúsculas no Node.js
-    if (possuiTermo && Array.isArray(dataResult.data)) {
+    // Refinamento de garantia no Node.js (insensível a acentos)
+    if (termo && termo.trim() !== '' && Array.isArray(dataResult.data)) {
       const termoNormalizado = removerAcentos(termo.trim());
 
-      const itensFiltrados = dataResult.data.filter((item) => {
+      const resultadosFiltrados = dataResult.data.filter((item) => {
         const objetoNormalizado = removerAcentos(item.objetoCompra);
         const orgaoNormalizado = removerAcentos(item.orgaoEntidade?.razaoSocial);
-        
+
         return objetoNormalizado.includes(termoNormalizado) || orgaoNormalizado.includes(termoNormalizado);
       });
 
-      // Atualiza o resultado apenas com as correspondências reais
-      dataResult.data = itensFiltrados;
-      dataResult.totalRegistros = itensFiltrados.length;
-      dataResult.totalPaginas = Math.ceil(itensFiltrados.length / 10) || 1;
+      dataResult.data = resultadosFiltrados;
+      dataResult.totalRegistros = resultadosFiltrados.length;
+      dataResult.totalPaginas = Math.ceil(resultadosFiltrados.length / 10) || 1;
     }
 
     res.status(200).json(dataResult);
