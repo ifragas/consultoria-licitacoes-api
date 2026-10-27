@@ -29,7 +29,7 @@ const searchPncpBids = async (req, res) => {
     const { termo, uf, modalidade, pagina = 1, dataInicial, dataFinal } = req.query;
 
     // Alterado para o endpoint geral de contratações públicas para abranger o intervalo de datas completo
-    const baseUrl = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicas';
+    const baseUrl = 'https://pncp.gov.br/api/consulta/v1/contratacoes';
 
     const formatarData = (date) => date.toISOString().split('T')[0].replace(/-/g, '');
 
