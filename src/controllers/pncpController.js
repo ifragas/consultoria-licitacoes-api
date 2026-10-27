@@ -1,20 +1,31 @@
 // controllers/pncpController.js
 const axios = require('axios');
 
+// Função auxiliar para remover acentos e caracteres especiais para comparação
+const removerAcentos = (str) => {
+  if (!str) return '';
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+};
+
 const searchPncpBids = async (req, res) => {
   try {
     const { termo, uf, modalidade, pagina = 1 } = req.query;
 
     const baseUrl = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 
+    // Intervalo de busca (últimos 30 dias)
     const hoje = new Date();
     const trintaDiasAtras = new Date();
     trintaDiasAtras.setDate(hoje.getDate() - 30);
 
     const formatarData = (date) => date.toISOString().split('T')[0].replace(/-/g, '');
 
-    // Se houver palavra-chave, aumentamos a busca inicial para 50 itens para podermos filtrar com precisão
-    const tamanhoPagina = (termo && termo.trim() !== '') ? 50 : 10;
+    // Se houver palavra-chave, buscamos mais registros (tamanhoPagina: 100) para filtrar localmente
+    const possuiTermo = termo && termo.trim() !== '';
+    const tamanhoPagina = possuiTermo ? 100 : 10;
 
     const params = {
       dataInicial: formatarData(trintaDiasAtras),
@@ -36,18 +47,18 @@ const searchPncpBids = async (req, res) => {
 
     let dataResult = response.data;
 
-    // Filtro estrito por palavra-chave no Node.js
-    if (termo && termo.trim() !== '' && Array.isArray(dataResult.data)) {
-      const termoBusca = termo.trim().toLowerCase();
+    // Filtro tolerante a acentos e maiúsculas/minúsculas no Node.js
+    if (possuiTermo && Array.isArray(dataResult.data)) {
+      const termoNormalizado = removerAcentos(termo.trim());
 
       const itensFiltrados = dataResult.data.filter((item) => {
-        const objeto = (item.objetoCompra || '').toLowerCase();
-        const orgao = (item.orgaoEntidade?.razaoSocial || '').toLowerCase();
+        const objetoNormalizado = removerAcentos(item.objetoCompra);
+        const orgaoNormalizado = removerAcentos(item.orgaoEntidade?.razaoSocial);
         
-        return objeto.includes(termoBusca) || orgao.includes(termoBusca);
+        return objetoNormalizado.includes(termoNormalizado) || orgaoNormalizado.includes(termoNormalizado);
       });
 
-      // Sobrescreve os dados e ajusta as métricas para a tela do React
+      // Atualiza o resultado apenas com as correspondências reais
       dataResult.data = itensFiltrados;
       dataResult.totalRegistros = itensFiltrados.length;
       dataResult.totalPaginas = Math.ceil(itensFiltrados.length / 10) || 1;
