@@ -1,4 +1,3 @@
-// controllers/pncpController.js
 const axios = require('axios');
 
 const normalizarTexto = (str) => {
@@ -12,7 +11,6 @@ const normalizarTexto = (str) => {
 // Função para extrair termos entre aspas e termos simples
 const extrairTermosDeBusca = (termoGeral) => {
   const termos = [];
-  // Expressão regular para pegar texto entre aspas ou palavras separadas por vírgula
   const regex = /"([^"]+)"|([^,]+)/g;
   let match;
 
@@ -28,19 +26,24 @@ const extrairTermosDeBusca = (termoGeral) => {
 
 const searchPncpBids = async (req, res) => {
   try {
-    const { termo, uf, modalidade, pagina = 1 } = req.query;
+    const { termo, uf, modalidade, pagina = 1, dataInicial, dataFinal } = req.query;
 
     const baseUrl = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 
-    const hoje = new Date();
-    const trintaDiasAtras = new Date();
-    trintaDiasAtras.setDate(hoje.getDate() - 30);
-
     const formatarData = (date) => date.toISOString().split('T')[0].replace(/-/g, '');
 
+    // Se o front não mandar datas, usa HOJE até HOJE + 30 DIAS (Futuro) por padrão
+    const hoje = new Date();
+    const trintaDiasFrente = new Date();
+    trintaDiasFrente.setDate(hoje.getDate() + 30);
+
+    // Trata e formata as datas recebidas em YYYY-MM-DD
+    const dtInicioFormatada = dataInicial ? dataInicial.replace(/-/g, '') : formatarData(hoje);
+    const dtFimFormatada = dataFinal ? dataFinal.replace(/-/g, '') : formatarData(trintaDiasFrente);
+
     const params = {
-      dataInicial: formatarData(trintaDiasAtras),
-      dataFinal: formatarData(hoje),
+      dataInicial: dtInicioFormatada,
+      dataFinal: dtFimFormatada,
       codigoModalidadeContratacao: modalidade ? Number(modalidade) : 6,
       pagina: Number(pagina),
       tamanhoPagina: 50,
@@ -66,9 +69,7 @@ const searchPncpBids = async (req, res) => {
         const textoOrgao = normalizarTexto(item.orgaoEntidade?.razaoSocial);
         const textoCompleto = `${textoObjeto} ${textoOrgao}`;
 
-        // Verifica se pelo menos UM dos termos/expressões existe no texto
         return listaTermos.some((termoItem) => {
-          // Trata coringas como % (ex: transporte%alunos -> engloba transporte de alunos)
           const partesComCoringa = termoItem.split('%').map(p => normalizarTexto(p.trim())).filter(Boolean);
 
           if (partesComCoringa.length > 1) {
