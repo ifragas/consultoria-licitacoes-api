@@ -3,10 +3,11 @@ const axios = require('axios');
 
 const searchPncpBids = async (req, res) => {
   try {
-    const { termo, uf, modalidade = 6, pagina = 1 } = req.query; // Padrão 6 (Pregão Eletrônico)
+    const { termo, uf, modalidade, pagina = 1 } = req.query;
 
     const baseUrl = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 
+    // Gera o intervalo dos últimos 30 dias dinamicamente
     const hoje = new Date();
     const trintaDiasAtras = new Date();
     trintaDiasAtras.setDate(hoje.getDate() - 30);
@@ -16,10 +17,16 @@ const searchPncpBids = async (req, res) => {
     const params = {
       dataInicial: formatarData(trintaDiasAtras),
       dataFinal: formatarData(hoje),
-      codigoModalidadeContratacao: Number(modalidade), // Obrigatório pela API do PNCP
       pagina: Number(pagina),
       tamanhoPagina: 10,
     };
+
+    // Aplica o código da modalidade se enviado pelo front (padrão 6 - Pregão Eletrônico se vazio)
+    if (modalidade && modalidade !== '') {
+      params.codigoModalidadeContratacao = Number(modalidade);
+    } else {
+      params.codigoModalidadeContratacao = 6;
+    }
 
     if (termo) params.objeto = termo;
     if (uf) params.uf = uf.toUpperCase();
