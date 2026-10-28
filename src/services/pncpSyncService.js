@@ -9,11 +9,23 @@ const PNCP_BASE_URL =
 const TAMANHO_PAGINA = 10;
 const INTERVALO_REQUISICOES_MS = 1500;
 const MAX_PAGINAS_POR_EXECUCAO = 100;
+const MAX_PAGINAS_RECUPERACAO = 10;
 const TIMEOUT_MS = 60000;
 const MAX_TENTATIVAS = 3;
 const DIAS_A_FRENTE = 30;
 
 const CHAVE_SINCRONIZACAO = 'contratacoes-proposta';
+
+const PaginaComFalhaSchema = new mongoose.Schema(
+  {
+    pagina: { type: Number, required: true },
+    dataFinal: { type: String, required: true },
+    tentativas: { type: Number, default: 0 },
+    ultimoErro: { type: String, default: '' },
+    registradaEm: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
 
 const PncpSyncState =
   mongoose.models.PncpSyncState ||
@@ -41,6 +53,10 @@ const PncpSyncState =
         ultimaExecucao: {
           type: Date,
           default: null,
+        },
+        paginasComFalha: {
+          type: [PaginaComFalhaSchema],
+          default: [],
         },
       },
       {
@@ -106,7 +122,6 @@ function converterData(valor) {
 
   if (!texto) return null;
 
-  // Formato compacto: YYYYMMDD.
   if (/^\d{8}$/.test(texto)) {
     const ano = Number(texto.slice(0, 4));
     const mes = Number(texto.slice(4, 6));
@@ -125,7 +140,6 @@ function converterData(valor) {
     return data;
   }
 
-  // Formato brasileiro: DD/MM/YYYY.
   const brasileira = texto.match(
     /^(\d{2})\/(\d{2})\/(\d{4})$/
   );
@@ -243,6 +257,13 @@ function mapearContratacao(item) {
   };
 }
 
+function obterMensagemErro(erro) {
+  const status = erro.response?.status;
+  const mensagem = erro.code || erro.message || 'Erro desconhecido';
+
+  return `HTTP=${status || 'sem resposta'}; ${mensagem}`;
+}
+
 async function buscarPagina(pagina, dataFinal) {
   let ultimoErro;
 
@@ -269,18 +290,15 @@ async function buscarPagina(pagina, dataFinal) {
     } catch (erro) {
       ultimoErro = erro;
 
-      const status = erro.response?.status;
-      const mensagem = erro.code || erro.message;
-
       console.error(
         `[PNCP SYNC] Falha na página ${pagina}; ` +
         `tentativa ${tentativa}/${MAX_TENTATIVAS}; ` +
-        `HTTP=${status || 'sem resposta'}; ${mensagem}`
+        obterMensagemErro(erro)
       );
 
       if (tentativa < MAX_TENTATIVAS) {
-        const espera = 2000 * tentativa;
-        await esperar(espera);
+        // Esperas progressivas: 3 s e 6 s.
+        await esperar(3000 * tentativa);
       }
     }
   }
@@ -305,6 +323,7 @@ async function obterEstado() {
         proximaPagina: 1,
         dataFinal: dataFinalNova,
         totalPaginas: 0,
+        paginasComFalha: [],
       });
     } catch (erro) {
       if (erro.code !== 11000) throw erro;
@@ -335,7 +354,220 @@ async function obterEstado() {
     await estado.save();
   }
 
+  // Compatibilidade com documentos criados antes desta versão.
+  if (!Array.isArray(estado.paginasComFalha)) {
+    estado.paginasComFalha = [];
+  }
+
   return estado;
+}
+
+async function registrarFalha(
+  estado,
+  pagina,
+  dataFinal,
+  erro
+) {
+  const mensagem = obterMensagemErro(erro);
+
+  const falhaExistente = estado.paginasComFalha.find(
+    (item) =>
+      item.pagina === pagina &&
+      item.dataFinal === dataFinal
+  );
+
+  if (falhaExistente) {
+    falhaExistente.tentativas =
+      Number(falhaExistente.tentativas || 0) +
+      MAX_TENTATIVAS;
+
+    falhaExistente.ultimoErro = mensagem;
+    falhaExistente.registradaEm = new Date();
+  } else {
+    estado.paginasComFalha.push({
+      pagina,
+      dataFinal,
+      tentativas: MAX_TENTATIVAS,
+      ultimoErro: mensagem,
+      registradaEm: new Date(),
+    });
+  }
+
+  estado.ultimaExecucao = new Date();
+  await estado.save();
+
+  console.error(
+    `[PNCP SYNC] Página ${pagina} registrada para recuperação. ` +
+    `dataFinal=${dataFinal}; ${mensagem}`
+  );
+}
+
+async function removerFalha(estado, pagina, dataFinal) {
+  estado.paginasComFalha = estado.paginasComFalha.filter(
+    (item) =>
+      !(
+        item.pagina === pagina &&
+        item.dataFinal === dataFinal
+      )
+  );
+
+  estado.ultimaExecucao = new Date();
+  await estado.save();
+}
+
+async function gravarRegistros(registros) {
+  const operacoes = [];
+  let registrosIgnorados = 0;
+
+  for (const item of registros) {
+    const operacao = mapearContratacao(item);
+
+    if (!operacao) {
+      registrosIgnorados += 1;
+      continue;
+    }
+
+    operacoes.push(operacao);
+  }
+
+  let registrosGravados = 0;
+
+  if (operacoes.length > 0) {
+    const resultado = await PncpBid.bulkWrite(
+      operacoes,
+      { ordered: false }
+    );
+
+    registrosGravados =
+      (resultado.upsertedCount || 0) +
+      (resultado.modifiedCount || 0);
+  }
+
+  return {
+    operacoesPreparadas: operacoes.length,
+    registrosIgnorados,
+    registrosGravados,
+  };
+}
+
+async function processarPagina(estado, pagina, dataFinal) {
+  const resposta = await buscarPagina(pagina, dataFinal);
+
+  const registros = Array.isArray(resposta?.data)
+    ? resposta.data
+    : Array.isArray(resposta?.items)
+      ? resposta.items
+      : [];
+
+  const totalPaginas = Number(
+    resposta?.totalPaginas ??
+    resposta?.totalPages ??
+    0
+  );
+
+  if (
+    registros.length === 0 &&
+    totalPaginas > 0 &&
+    pagina < totalPaginas
+  ) {
+    throw new Error(
+      `A página ${pagina} veio vazia, mas a API informa ` +
+      `${totalPaginas} páginas.`
+    );
+  }
+
+  const gravacao = await gravarRegistros(registros);
+
+  console.log(
+    `[PNCP SYNC] Página ${pagina}: ` +
+    `${registros.length} recebidos; ` +
+    `${gravacao.operacoesPreparadas} operações preparadas; ` +
+    `registros gravados/atualizados=${gravacao.registrosGravados}; ` +
+    `total de páginas=${totalPaginas || 'desconhecido'}.`
+  );
+
+  return {
+    registrosRecebidos: registros.length,
+    totalPaginas,
+    ...gravacao,
+  };
+}
+
+async function recuperarPaginasComFalha(estado, estatisticas) {
+  // Recuperamos um lote limitado para que a varredura principal
+  // também tenha tempo de avançar nesta execução.
+  const pendentes = estado.paginasComFalha
+    .slice(0, MAX_PAGINAS_RECUPERACAO)
+    .map((item) => ({
+      pagina: item.pagina,
+      dataFinal: item.dataFinal,
+    }));
+
+  if (pendentes.length === 0) {
+    return;
+  }
+
+  console.log(
+    `[PNCP SYNC] Iniciando recuperação de ${pendentes.length} página(s) pendente(s).`
+  );
+
+  for (let indice = 0; indice < pendentes.length; indice += 1) {
+    const pendente = pendentes[indice];
+
+    try {
+      const resultado = await processarPagina(
+        estado,
+        pendente.pagina,
+        pendente.dataFinal
+      );
+
+      await removerFalha(
+        estado,
+        pendente.pagina,
+        pendente.dataFinal
+      );
+
+      estatisticas.paginasRecuperadas += 1;
+      estatisticas.registrosRecebidos +=
+        resultado.registrosRecebidos;
+      estatisticas.registrosIgnorados +=
+        resultado.registrosIgnorados;
+      estatisticas.registrosGravados +=
+        resultado.registrosGravados;
+
+      console.log(
+        `[PNCP SYNC] Página ${pendente.pagina} recuperada com sucesso.`
+      );
+    } catch (erro) {
+      // A falha permanece salva para a próxima execução.
+      console.error(
+        `[PNCP SYNC] Recuperação da página ${pendente.pagina} falhou: ` +
+        obterMensagemErro(erro)
+      );
+
+      const falha = estado.paginasComFalha.find(
+        (item) =>
+          item.pagina === pendente.pagina &&
+          item.dataFinal === pendente.dataFinal
+      );
+
+      if (falha) {
+        falha.tentativas =
+          Number(falha.tentativas || 0) + MAX_TENTATIVAS;
+        falha.ultimoErro = obterMensagemErro(erro);
+        falha.registradaEm = new Date();
+      }
+
+      estado.ultimaExecucao = new Date();
+      await estado.save();
+
+      estatisticas.paginasAindaComFalha += 1;
+    }
+
+    if (indice < pendentes.length - 1) {
+      await esperar(INTERVALO_REQUISICOES_MS);
+    }
+  }
 }
 
 async function sincronizarPncp() {
@@ -356,15 +588,24 @@ async function sincronizarPncp() {
 
   const inicio = new Date();
 
-  let paginasConsultadas = 0;
-  let registrosRecebidos = 0;
-  let registrosIgnorados = 0;
-  let registrosGravados = 0;
+  const estatisticas = {
+    paginasConsultadas: 0,
+    paginasRecuperadas: 0,
+    paginasAindaComFalha: 0,
+    registrosRecebidos: 0,
+    registrosIgnorados: 0,
+    registrosGravados: 0,
+  };
+
   let totalPaginas = 0;
   let varreduraConcluida = false;
 
   try {
     const estado = await obterEstado();
+
+    // Primeiro tentamos recuperar falhas antigas. Cada página
+    // mantém a dataFinal original da consulta em que falhou.
+    await recuperarPaginasComFalha(estado, estatisticas);
 
     let proximaPagina = estado.proximaPagina;
     const dataFinalDaVarredura = estado.dataFinal;
@@ -376,7 +617,8 @@ async function sincronizarPncp() {
       `dataFinal=${dataFinalDaVarredura}; ` +
       `tamanhoPagina=${TAMANHO_PAGINA}; ` +
       `timeout=${TIMEOUT_MS}; ` +
-      `totalPaginas=${totalPaginas || 'desconhecido'}`
+      `totalPaginas=${totalPaginas || 'desconhecido'}; ` +
+      `falhas pendentes=${estado.paginasComFalha.length}`
     );
 
     for (
@@ -386,82 +628,45 @@ async function sincronizarPncp() {
     ) {
       const pagina = proximaPagina;
 
-      const resposta = await buscarPagina(
-        pagina,
-        dataFinalDaVarredura
-      );
-
-      const registros = Array.isArray(resposta?.data)
-        ? resposta.data
-        : Array.isArray(resposta?.items)
-          ? resposta.items
-          : [];
-
-      const paginasInformadas = Number(
-        resposta?.totalPaginas ??
-        resposta?.totalPages ??
-        0
-      );
-
-      if (
-        Number.isFinite(paginasInformadas) &&
-        paginasInformadas > 0
-      ) {
-        totalPaginas = paginasInformadas;
-      }
-
-      if (totalPaginas > 0 && pagina > totalPaginas) {
-        varreduraConcluida = true;
-        proximaPagina = 1;
-        break;
-      }
-
-      if (registros.length === 0) {
-        if (totalPaginas > 0 && pagina < totalPaginas) {
-          throw new Error(
-            `A página ${pagina} veio vazia, mas a API informa ` +
-            `${totalPaginas} páginas. O cursor será preservado.`
-          );
-        }
-
-        varreduraConcluida = true;
-        proximaPagina = 1;
-        break;
-      }
-
-      const operacoes = [];
-
-      for (const item of registros) {
-        const operacao = mapearContratacao(item);
-
-        if (!operacao) {
-          registrosIgnorados += 1;
-          continue;
-        }
-
-        operacoes.push(operacao);
-      }
-
-      if (operacoes.length > 0) {
-        const resultado = await PncpBid.bulkWrite(
-          operacoes,
-          { ordered: false }
+      try {
+        const resultado = await processarPagina(
+          estado,
+          pagina,
+          dataFinalDaVarredura
         );
 
-        registrosGravados +=
-          (resultado.upsertedCount || 0) +
-          (resultado.modifiedCount || 0);
+        estatisticas.paginasConsultadas += 1;
+        estatisticas.registrosRecebidos +=
+          resultado.registrosRecebidos;
+        estatisticas.registrosIgnorados +=
+          resultado.registrosIgnorados;
+        estatisticas.registrosGravados +=
+          resultado.registrosGravados;
+
+        if (resultado.totalPaginas > 0) {
+          totalPaginas = resultado.totalPaginas;
+        }
+
+        // Se esta página já estava registrada como falha,
+        // removemos a pendência após a gravação bem-sucedida.
+        await removerFalha(
+          estado,
+          pagina,
+          dataFinalDaVarredura
+        );
+      } catch (erro) {
+        console.error(
+          `[PNCP SYNC] Não foi possível processar a página ${pagina}. ` +
+          `A sincronização continuará. ${obterMensagemErro(erro)}`
+        );
+
+        await registrarFalha(
+          estado,
+          pagina,
+          dataFinalDaVarredura,
+          erro
+        );
       }
-
-      paginasConsultadas += 1;
-      registrosRecebidos += registros.length;
-
-      console.log(
-        `[PNCP SYNC] Página ${pagina}: ` +
-        `${registros.length} recebidos; ` +
-        `${operacoes.length} operações preparadas; ` +
-        `total de páginas=${totalPaginas || 'desconhecido'}.`
-      );
 
       const ultimaPaginaConhecida =
         totalPaginas > 0 && pagina >= totalPaginas;
@@ -470,10 +675,11 @@ async function sincronizarPncp() {
         varreduraConcluida = true;
         proximaPagina = 1;
       } else {
+        // Mesmo quando uma página falha, avançamos o cursor.
+        // A página permanece registrada para recuperação.
         proximaPagina = pagina + 1;
       }
 
-      // Salva o cursor somente depois de gravar a página.
       estado.proximaPagina = proximaPagina;
       estado.totalPaginas = totalPaginas;
       estado.ultimaExecucao = new Date();
@@ -505,14 +711,13 @@ async function sincronizarPncp() {
       sucesso: true,
       inicio: inicio.toISOString(),
       fim: new Date().toISOString(),
-      paginasConsultadas,
-      registrosRecebidos,
-      registrosIgnorados,
-      registrosGravados,
+      ...estatisticas,
       totalPaginasConhecidas: totalPaginas,
       proximaPagina: estado.proximaPagina,
       dataFinal: estado.dataFinal,
       varreduraConcluida,
+      totalPaginasComFalhaPendentes:
+        estado.paginasComFalha.length,
     };
 
     console.log('[PNCP SYNC] Resultado:', resultado);
@@ -520,7 +725,7 @@ async function sincronizarPncp() {
     return resultado;
   } catch (erro) {
     console.error(
-      '[PNCP SYNC] Erro:',
+      '[PNCP SYNC] Erro geral:',
       erro.response?.status || '',
       erro.message
     );
