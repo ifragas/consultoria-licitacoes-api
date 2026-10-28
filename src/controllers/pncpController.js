@@ -10,14 +10,6 @@ const filaJobs = [];
 
 let processamentoFilaAtivo = false;
 
-function normalizarTexto(valor) {
-  return String(valor ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
-}
-
 function normalizarData(data) {
   if (!data) return null;
 
@@ -118,6 +110,100 @@ function obterModalidades(entrada = {}) {
   ];
 }
 
+/**
+ * Separa palavras-chave por vírgulas, ponto e vírgula,
+ * quebras de linha, barras verticais e outros separadores.
+ *
+ * Expressões entre aspas permanecem juntas.
+ * Espaços fora das aspas também separam termos.
+ *
+ * Exemplos:
+ * drenagem, terraplenagem
+ * "medicina do trabalho"; pavimentação
+ * areia brita basalto
+ */
+function separarTermosPesquisa(entrada) {
+  const texto = String(entrada ?? '').trim();
+
+  if (!texto) return [];
+
+  const termos = [];
+  let atual = '';
+  let aspas = null;
+
+  const separadores = new Set([
+    ',',
+    ';',
+    '\n',
+    '\r',
+    '|',
+    '\t',
+  ]);
+
+  for (let i = 0; i < texto.length; i += 1) {
+    const caractere = texto[i];
+
+    const ehAspa =
+      caractere === '"' ||
+      caractere === "'" ||
+      caractere === '“' ||
+      caractere === '”' ||
+      caractere === '‘' ||
+      caractere === '’';
+
+    if (ehAspa) {
+      if (aspas === null) {
+        aspas = caractere;
+        continue;
+      }
+
+      const fechaAspas =
+        (aspas === '"' && (caractere === '"' || caractere === '”')) ||
+        (aspas === "'" && (caractere === "'" || caractere === '’')) ||
+        (aspas === '“' && caractere === '”') ||
+        (aspas === '‘' && caractere === '’');
+
+      if (fechaAspas) {
+        aspas = null;
+        continue;
+      }
+    }
+
+    if (aspas === null && separadores.has(caractere)) {
+      if (atual.trim()) termos.push(atual.trim());
+      atual = '';
+      continue;
+    }
+
+    if (aspas === null && /\s/.test(caractere)) {
+      if (atual.trim()) termos.push(atual.trim());
+      atual = '';
+      continue;
+    }
+
+    atual += caractere;
+  }
+
+  if (atual.trim()) termos.push(atual.trim());
+
+  // Remove duplicatas sem diferenciar maiúsculas/minúsculas.
+  const termosUnicos = [];
+  const vistos = new Set();
+
+  for (const termo of termos) {
+    const chave = termo.normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+
+    if (!chave || vistos.has(chave)) continue;
+
+    vistos.add(chave);
+    termosUnicos.push(termo);
+  }
+
+  return termosUnicos;
+}
+
 function obterFiltros(entrada = {}) {
   const inicialInformada = normalizarData(
     entrada.dataInicial
@@ -154,8 +240,6 @@ function obterFiltros(entrada = {}) {
   }
 
   const hoje = dataHojeFormatoPncp();
-
-  // Por padrão, pesquisa da data atual até 30 dias à frente.
   const dataInicial = inicialInformada || hoje;
 
   const dataFinal =
@@ -178,12 +262,15 @@ function obterFiltros(entrada = {}) {
     );
   }
 
+  const termoOriginal = String(entrada.termo || '').trim();
+
   return {
     dataInicial,
     dataFinal,
     uf,
     modalidades: obterModalidades(entrada),
-    termo: String(entrada.termo || '').trim(),
+    termo: termoOriginal,
+    termos: separarTermosPesquisa(termoOriginal),
   };
 }
 
@@ -209,9 +296,37 @@ function escaparRegex(valor) {
   );
 }
 
+function regexSemAcentos(termo) {
+  const caracteres = {
+    a: '[aáàâãä]',
+    e: '[eéèêë]',
+    i: '[iíìîï]',
+    o: '[oóòôõö]',
+    u: '[uúùûü]',
+    c: '[cç]',
+    n: '[nñ]',
+  };
+
+  const normalizado = String(termo)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  const padrao = normalizado
+    .split('')
+    .map((caractere) => {
+      if (caracteres[caractere]) {
+        return caracteres[caractere];
+      }
+
+      return escaparRegex(caractere);
+    })
+    .join('');
+
+  return new RegExp(padrao, 'i');
+}
+
 function construirConsulta(filtros) {
-  // Filtra pela DATA DE ABERTURA da sessão,
-  // não pela data de encerramento das propostas.
   const consulta = {
     dataAberturaProposta: criarIntervaloDatas(filtros),
   };
@@ -228,20 +343,25 @@ function construirConsulta(filtros) {
     };
   }
 
-  if (filtros.termo) {
-    const regex = new RegExp(
-      escaparRegex(filtros.termo),
-      'i'
-    );
-
-    consulta.$or = [
-      { objetoCompra: regex },
-      { informacaoComplementar: regex },
-      { orgaoNome: regex },
-      { unidadeNome: regex },
-      { municipio: regex },
-      { modalidadeNome: regex },
+  if (filtros.termos.length > 0) {
+    const camposPesquisaveis = [
+      'objetoCompra',
+      'informacaoComplementar',
+      'orgaoNome',
+      'unidadeNome',
+      'municipio',
+      'modalidadeNome',
     ];
+
+    // Cada termo pode corresponder a qualquer campo.
+    // A consulta aceita um ou vários termos com lógica OU.
+    consulta.$or = filtros.termos.flatMap((termo) => {
+      const regex = regexSemAcentos(termo);
+
+      return camposPesquisaveis.map((campo) => ({
+        [campo]: regex,
+      }));
+    });
   }
 
   return consulta;
@@ -329,21 +449,16 @@ function limparJobsAntigos() {
 }
 
 function contarPaginasConcluidas(job) {
-  return Math.ceil(
-    job.processados / TAMANHO_LOTE_JOB
-  );
+  return Math.ceil(job.processados / TAMANHO_LOTE_JOB);
 }
 
 function calcularProgresso(job) {
   if (job.status === 'completed') return 100;
-
   if (!job.totalRegistros) return 0;
 
   return Math.min(
     99,
-    Math.floor(
-      (job.processados / job.totalRegistros) * 100
-    )
+    Math.floor((job.processados / job.totalRegistros) * 100)
   );
 }
 
@@ -361,8 +476,7 @@ function serializarJob(job) {
     erro: job.erro,
     proximaTentativaEm: null,
     modalidades: job.filtros.modalidades,
-    todasModalidades:
-      job.filtros.modalidades.length === 0,
+    todasModalidades: job.filtros.modalidades.length === 0,
     etapaAtual: null,
     resumoFontes: {
       fonte: 'mongodb',
@@ -386,9 +500,7 @@ async function processarJob(job) {
   try {
     const consulta = construirConsulta(job.filtros);
 
-    job.totalRegistros = await PncpBid.countDocuments(
-      consulta
-    );
+    job.totalRegistros = await PncpBid.countDocuments(consulta);
 
     for (
       let deslocamento = 0;
@@ -482,8 +594,7 @@ async function searchPncpBids(req, res) {
     );
 
     const limite =
-      Number.isInteger(limiteSolicitado) &&
-      limiteSolicitado >= 1
+      Number.isInteger(limiteSolicitado) && limiteSolicitado >= 1
         ? Math.min(limiteSolicitado, 100)
         : 50;
 
@@ -502,9 +613,7 @@ async function searchPncpBids(req, res) {
         .lean(),
     ]);
 
-    const totalPaginas = Math.ceil(
-      totalRegistros / limite
-    );
+    const totalPaginas = Math.ceil(totalRegistros / limite);
 
     return res.json({
       data: registros.map(converterParaRegistroPncp),
