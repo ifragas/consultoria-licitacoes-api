@@ -155,6 +155,7 @@ function obterFiltros(entrada = {}) {
 
   const hoje = dataHojeFormatoPncp();
 
+  // Por padrão, pesquisa da data atual até 30 dias à frente.
   const dataInicial = inicialInformada || hoje;
 
   const dataFinal =
@@ -209,8 +210,10 @@ function escaparRegex(valor) {
 }
 
 function construirConsulta(filtros) {
+  // Filtra pela DATA DE ABERTURA da sessão,
+  // não pela data de encerramento das propostas.
   const consulta = {
-    dataEncerramentoProposta: criarIntervaloDatas(filtros),
+    dataAberturaProposta: criarIntervaloDatas(filtros),
   };
 
   if (filtros.uf) {
@@ -256,8 +259,6 @@ function converterParaRegistroPncp(documento) {
       ? registro.dadosOriginais
       : {};
 
-  // Mantém os campos originais utilizados pelo frontend
-  // e complementa os dados normalizados do MongoDB.
   return {
     ...original,
 
@@ -389,9 +390,6 @@ async function processarJob(job) {
       consulta
     );
 
-    // Busca em lotes para limitar o tamanho de cada consulta.
-    // Os resultados completos ainda ficam em memória porque
-    // o contrato atual do endpoint retorna o array "data".
     for (
       let deslocamento = 0;
       deslocamento < job.totalRegistros;
@@ -399,7 +397,7 @@ async function processarJob(job) {
     ) {
       const lote = await PncpBid.find(consulta)
         .sort({
-          dataEncerramentoProposta: 1,
+          dataAberturaProposta: 1,
           numeroControlePNCP: 1,
         })
         .skip(deslocamento)
@@ -496,7 +494,7 @@ async function searchPncpBids(req, res) {
 
       PncpBid.find(consulta)
         .sort({
-          dataEncerramentoProposta: 1,
+          dataAberturaProposta: 1,
           numeroControlePNCP: 1,
         })
         .skip((pagina - 1) * limite)
