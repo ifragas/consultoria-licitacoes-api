@@ -6,10 +6,11 @@ const PncpBid = require('../models/PncpBid');
 const PNCP_BASE_URL =
   'https://pncp.gov.br/api/consulta/v1/contratacoes/proposta';
 
-const TAMANHO_PAGINA = 50;
+const TAMANHO_PAGINA = 10;
 const INTERVALO_REQUISICOES_MS = 1500;
 const MAX_PAGINAS_POR_EXECUCAO = 100;
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 60000;
+const MAX_TENTATIVAS = 3;
 const DIAS_A_FRENTE = 30;
 
 const CHAVE_SINCRONIZACAO = 'contratacoes-proposta';
@@ -243,20 +244,48 @@ function mapearContratacao(item) {
 }
 
 async function buscarPagina(pagina, dataFinal) {
-  const resposta = await axios.get(PNCP_BASE_URL, {
-    params: {
-      pagina,
-      tamanhoPagina: TAMANHO_PAGINA,
-      dataFinal,
-    },
-    timeout: TIMEOUT_MS,
-    headers: {
-      Accept: 'application/json',
-      'User-Agent': 'Gestorae-PNCP-Sync/1.0',
-    },
-  });
+  let ultimoErro;
 
-  return resposta.data;
+  for (
+    let tentativa = 1;
+    tentativa <= MAX_TENTATIVAS;
+    tentativa += 1
+  ) {
+    try {
+      const resposta = await axios.get(PNCP_BASE_URL, {
+        params: {
+          pagina,
+          tamanhoPagina: TAMANHO_PAGINA,
+          dataFinal,
+        },
+        timeout: TIMEOUT_MS,
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'Gestorae-PNCP-Sync/1.0',
+        },
+      });
+
+      return resposta.data;
+    } catch (erro) {
+      ultimoErro = erro;
+
+      const status = erro.response?.status;
+      const mensagem = erro.code || erro.message;
+
+      console.error(
+        `[PNCP SYNC] Falha na página ${pagina}; ` +
+        `tentativa ${tentativa}/${MAX_TENTATIVAS}; ` +
+        `HTTP=${status || 'sem resposta'}; ${mensagem}`
+      );
+
+      if (tentativa < MAX_TENTATIVAS) {
+        const espera = 2000 * tentativa;
+        await esperar(espera);
+      }
+    }
+  }
+
+  throw ultimoErro;
 }
 
 async function obterEstado() {
@@ -278,7 +307,6 @@ async function obterEstado() {
         totalPaginas: 0,
       });
     } catch (erro) {
-      // Protege contra a criação simultânea do estado.
       if (erro.code !== 11000) throw erro;
 
       estado = await PncpSyncState.findOne({
@@ -346,6 +374,8 @@ async function sincronizarPncp() {
     console.log(
       `[PNCP SYNC] Iniciando na página ${proximaPagina}; ` +
       `dataFinal=${dataFinalDaVarredura}; ` +
+      `tamanhoPagina=${TAMANHO_PAGINA}; ` +
+      `timeout=${TIMEOUT_MS}; ` +
       `totalPaginas=${totalPaginas || 'desconhecido'}`
     );
 
@@ -380,8 +410,6 @@ async function sincronizarPncp() {
         totalPaginas = paginasInformadas;
       }
 
-      // Se a API informou a última página e a página atual
-      // ultrapassou esse limite, não processa dados inválidos.
       if (totalPaginas > 0 && pagina > totalPaginas) {
         varreduraConcluida = true;
         proximaPagina = 1;
@@ -430,7 +458,7 @@ async function sincronizarPncp() {
 
       console.log(
         `[PNCP SYNC] Página ${pagina}: ` +
-        `${registros.length} registros recebidos; ` +
+        `${registros.length} recebidos; ` +
         `${operacoes.length} operações preparadas; ` +
         `total de páginas=${totalPaginas || 'desconhecido'}.`
       );
@@ -445,9 +473,7 @@ async function sincronizarPncp() {
         proximaPagina = pagina + 1;
       }
 
-      // Salva o progresso depois de processar cada página.
-      // Se a próxima requisição falhar, a próxima execução
-      // poderá retomar a partir da página seguinte.
+      // Salva o cursor somente depois de gravar a página.
       estado.proximaPagina = proximaPagina;
       estado.totalPaginas = totalPaginas;
       estado.ultimaExecucao = new Date();
@@ -464,8 +490,6 @@ async function sincronizarPncp() {
     }
 
     if (varreduraConcluida) {
-      // Uma nova varredura começa com a data de referência
-      // atualizada somente após concluir a anterior.
       estado.proximaPagina = 1;
       estado.dataFinal = dataDiasDepois(
         dataHojeBrasil(),
