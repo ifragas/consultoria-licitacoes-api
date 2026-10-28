@@ -6,6 +6,8 @@ const PncpBid = require('../models/PncpBid');
 const PNCP_BASE_URL =
   'https://pncp.gov.br/api/consulta/v1/contratacoes/proposta';
 
+const UF_PERMITIDA = 'RS';
+
 const TAMANHO_PAGINA = 10;
 const INTERVALO_REQUISICOES_MS = 1500;
 const MAX_PAGINAS_POR_EXECUCAO = 100;
@@ -140,9 +142,7 @@ function converterData(valor) {
     return data;
   }
 
-  const brasileira = texto.match(
-    /^(\d{2})\/(\d{2})\/(\d{4})$/
-  );
+  const brasileira = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
 
   if (brasileira) {
     return converterData(
@@ -176,6 +176,22 @@ function converterNumero(valor) {
   return Number.isFinite(numero) ? numero : null;
 }
 
+// Obtém a UF do objeto retornado pelo PNCP.
+// A mesma função é usada no filtro e no mapeamento.
+function obterUf(item) {
+  const unidade = item?.unidadeOrgao || {};
+
+  const uf = primeiroValor(
+    unidade.ufSigla,
+    unidade.uf,
+    item?.ufSigla,
+    item?.uf,
+    ''
+  );
+
+  return String(uf || '').trim().toUpperCase();
+}
+
 function mapearContratacao(item) {
   const identificador = primeiroValor(
     item.numeroControlePNCP,
@@ -196,12 +212,7 @@ function mapearContratacao(item) {
     ''
   );
 
-  const uf = primeiroValor(
-    unidade.ufSigla,
-    unidade.uf,
-    item.uf,
-    ''
-  );
+  const uf = obterUf(item);
 
   const urlPncp = primeiroValor(
     item.linkSistemaOrigem,
@@ -226,7 +237,7 @@ function mapearContratacao(item) {
           orgaoCnpj: String(orgao.cnpj || ''),
           orgaoNome: String(orgao.razaoSocial || ''),
           unidadeNome: String(unidade.nomeUnidade || ''),
-          uf: String(uf || '').toUpperCase(),
+          uf,
           municipio: String(municipio || ''),
           anoCompra: converterNumero(item.anoCompra),
           sequencialCompra: String(
@@ -297,7 +308,6 @@ async function buscarPagina(pagina, dataFinal) {
       );
 
       if (tentativa < MAX_TENTATIVAS) {
-        // Esperas progressivas: 3 s e 6 s.
         await esperar(3000 * tentativa);
       }
     }
@@ -354,7 +364,6 @@ async function obterEstado() {
     await estado.save();
   }
 
-  // Compatibilidade com documentos criados antes desta versão.
   if (!Array.isArray(estado.paginasComFalha)) {
     estado.paginasComFalha = [];
   }
@@ -362,12 +371,7 @@ async function obterEstado() {
   return estado;
 }
 
-async function registrarFalha(
-  estado,
-  pagina,
-  dataFinal,
-  erro
-) {
+async function registrarFalha(estado, pagina, dataFinal, erro) {
   const mensagem = obterMensagemErro(erro);
 
   const falhaExistente = estado.paginasComFalha.find(
@@ -417,9 +421,28 @@ async function removerFalha(estado, pagina, dataFinal) {
 
 async function gravarRegistros(registros) {
   const operacoes = [];
+
   let registrosIgnorados = 0;
+  let registrosForaDoRS = 0;
+  let registrosSemUF = 0;
 
   for (const item of registros) {
+    const uf = obterUf(item);
+
+    // Registros sem UF são ignorados por segurança.
+    if (!uf) {
+      registrosSemUF += 1;
+      registrosIgnorados += 1;
+      continue;
+    }
+
+    // Somente contratações do Rio Grande do Sul são gravadas.
+    if (uf !== UF_PERMITIDA) {
+      registrosForaDoRS += 1;
+      registrosIgnorados += 1;
+      continue;
+    }
+
     const operacao = mapearContratacao(item);
 
     if (!operacao) {
@@ -446,6 +469,8 @@ async function gravarRegistros(registros) {
   return {
     operacoesPreparadas: operacoes.length,
     registrosIgnorados,
+    registrosForaDoRS,
+    registrosSemUF,
     registrosGravados,
   };
 }
@@ -481,7 +506,11 @@ async function processarPagina(estado, pagina, dataFinal) {
   console.log(
     `[PNCP SYNC] Página ${pagina}: ` +
     `${registros.length} recebidos; ` +
-    `${gravacao.operacoesPreparadas} operações preparadas; ` +
+    `RS=${gravacao.operacoesPreparadas}; ` +
+    `fora do RS=${gravacao.registrosForaDoRS}; ` +
+    `sem UF=${gravacao.registrosSemUF}; ` +
+    `operações preparadas=${gravacao.operacoesPreparadas}; ` +
+    `ignorados=${gravacao.registrosIgnorados}; ` +
     `registros gravados/atualizados=${gravacao.registrosGravados}; ` +
     `total de páginas=${totalPaginas || 'desconhecido'}.`
   );
@@ -494,8 +523,6 @@ async function processarPagina(estado, pagina, dataFinal) {
 }
 
 async function recuperarPaginasComFalha(estado, estatisticas) {
-  // Recuperamos um lote limitado para que a varredura principal
-  // também tenha tempo de avançar nesta execução.
   const pendentes = estado.paginasComFalha
     .slice(0, MAX_PAGINAS_RECUPERACAO)
     .map((item) => ({
@@ -532,6 +559,10 @@ async function recuperarPaginasComFalha(estado, estatisticas) {
         resultado.registrosRecebidos;
       estatisticas.registrosIgnorados +=
         resultado.registrosIgnorados;
+      estatisticas.registrosForaDoRS +=
+        resultado.registrosForaDoRS;
+      estatisticas.registrosSemUF +=
+        resultado.registrosSemUF;
       estatisticas.registrosGravados +=
         resultado.registrosGravados;
 
@@ -539,7 +570,6 @@ async function recuperarPaginasComFalha(estado, estatisticas) {
         `[PNCP SYNC] Página ${pendente.pagina} recuperada com sucesso.`
       );
     } catch (erro) {
-      // A falha permanece salva para a próxima execução.
       console.error(
         `[PNCP SYNC] Recuperação da página ${pendente.pagina} falhou: ` +
         obterMensagemErro(erro)
@@ -594,6 +624,8 @@ async function sincronizarPncp() {
     paginasAindaComFalha: 0,
     registrosRecebidos: 0,
     registrosIgnorados: 0,
+    registrosForaDoRS: 0,
+    registrosSemUF: 0,
     registrosGravados: 0,
   };
 
@@ -603,8 +635,7 @@ async function sincronizarPncp() {
   try {
     const estado = await obterEstado();
 
-    // Primeiro tentamos recuperar falhas antigas. Cada página
-    // mantém a dataFinal original da consulta em que falhou.
+    // Mantém a recuperação das páginas antigas.
     await recuperarPaginasComFalha(estado, estatisticas);
 
     let proximaPagina = estado.proximaPagina;
@@ -614,6 +645,7 @@ async function sincronizarPncp() {
 
     console.log(
       `[PNCP SYNC] Iniciando na página ${proximaPagina}; ` +
+      `UF=${UF_PERMITIDA}; ` +
       `dataFinal=${dataFinalDaVarredura}; ` +
       `tamanhoPagina=${TAMANHO_PAGINA}; ` +
       `timeout=${TIMEOUT_MS}; ` +
@@ -640,6 +672,10 @@ async function sincronizarPncp() {
           resultado.registrosRecebidos;
         estatisticas.registrosIgnorados +=
           resultado.registrosIgnorados;
+        estatisticas.registrosForaDoRS +=
+          resultado.registrosForaDoRS;
+        estatisticas.registrosSemUF +=
+          resultado.registrosSemUF;
         estatisticas.registrosGravados +=
           resultado.registrosGravados;
 
@@ -647,8 +683,6 @@ async function sincronizarPncp() {
           totalPaginas = resultado.totalPaginas;
         }
 
-        // Se esta página já estava registrada como falha,
-        // removemos a pendência após a gravação bem-sucedida.
         await removerFalha(
           estado,
           pagina,
@@ -675,8 +709,6 @@ async function sincronizarPncp() {
         varreduraConcluida = true;
         proximaPagina = 1;
       } else {
-        // Mesmo quando uma página falha, avançamos o cursor.
-        // A página permanece registrada para recuperação.
         proximaPagina = pagina + 1;
       }
 
@@ -709,6 +741,7 @@ async function sincronizarPncp() {
 
     const resultado = {
       sucesso: true,
+      ufFiltrada: UF_PERMITIDA,
       inicio: inicio.toISOString(),
       fim: new Date().toISOString(),
       ...estatisticas,
